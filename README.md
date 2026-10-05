@@ -6,7 +6,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 
 ## Funktionen
 
-- bis zu 32 virtuelle M-Bus-Zähler
+- bis zu 250 virtuelle M-Bus-Zähler (eine pro Primäradresse)
 - Primäradresse 1–250 pro Zähler
 - eigene 8-stellige Sekundär-ID pro Zähler
 - Manufacturer-ID mit 3 Buchstaben, Standard `BAS`
@@ -17,7 +17,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
 - Weboberfläche zur Konfiguration
-- Konfiguration persistent in ESP32 NVS/Flash
+- Konfiguration persistent im ESP32-Flash (LittleFS, Zählerstände im NVS)
 - WLAN-Client; bei fehlender/fehlerhafter WLAN-Konfiguration startet ein Access Point
 - M-Bus-Monitor im Browser mit letztem RX-/TX-Telegramm
 - M-Bus UART standardmäßig 2400 Baud, 8E1
@@ -146,7 +146,7 @@ Nach dem Speichern verbindet sich der ESP32 sofort neu, ein Neustart ist nicht n
 
 ### Topics
 
-`<base>` ist das Basis-Topic, `<n>` die Zählernummer 1…32 wie in der Weboberfläche.
+`<base>` ist das Basis-Topic, `<n>` die Zählernummer 1…250 wie in der Weboberfläche.
 
 | Topic | Richtung | Inhalt |
 |---|---|---|

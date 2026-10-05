@@ -102,7 +102,7 @@ const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "example":[{"index":1,"value":10},{"primaryAddress":5,"value":20.5}]}}},
 "responses":{"200":{"description":"Geänderte Zähler","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Meter"}}}}},"400":{"$ref":"#/components/responses/Error"}}}},
 "/api/meters/{n}":{
-"parameters":[{"name":"n","in":"path","required":true,"description":"Zählernummer (1 ...)","schema":{"type":"integer","minimum":1,"maximum":32}}],
+"parameters":[{"name":"n","in":"path","required":true,"description":"Zählernummer (1 ...)","schema":{"type":"integer","minimum":1,"maximum":250}}],
 "get":{"summary":"Ein Zähler","responses":{"200":{"description":"Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"404":{"$ref":"#/components/responses/Error"}}},
 "put":{"summary":"Zählerstand setzen","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"value":{"type":"number","minimum":0}},"required":["value"]},"example":{"value":123.456}}}},
 "responses":{"200":{"description":"Geänderter Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"400":{"$ref":"#/components/responses/Error"},"404":{"$ref":"#/components/responses/Error"}}}},

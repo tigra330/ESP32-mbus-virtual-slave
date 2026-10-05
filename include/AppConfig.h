@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 
-static constexpr size_t MAX_METERS = 32;
+static constexpr size_t MAX_METERS = 250; // one per M-Bus primary address 1..250
 
 struct VirtualMeter {
   bool enabled = true;
@@ -21,6 +21,8 @@ struct AppConfig {
   String wifiSsid;
   String wifiPassword;
   uint32_t mbusBaud = 2400;
+  uint8_t mbusStopBits = 1;     // 2 = workaround for slaves whose bus-side supply sags on long space runs
+  uint8_t mbusByteGapMs = 0;    // idle time after each sent byte, same workaround (0 = standard, max 20)
   int mbusRxPin = 16;
   int mbusTxPin = 17;
   size_t meterCount = 10;

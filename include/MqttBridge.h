@@ -1,5 +1,6 @@
 #pragma once
 #include <Arduino.h>
+#include <esp_idf_version.h>
 #include <mqtt_client.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
@@ -8,7 +9,7 @@
 // MQTT connection based on the ESP-IDF esp-mqtt client. It runs in its own task and
 // never blocks loop(), so M-Bus requests are answered even if the broker is unreachable.
 //
-// Topics (<base> = configured base topic, <n> = meter index 1..32):
+// Topics (<base> = configured base topic, <n> = meter index 1..250):
 //   <base>/status          "online" / "offline" (retained, last will)
 //   <base>/meter/<n>/set   subscribe: "123.456" or {"value":123.456}
 //   <base>/meter/<n>/state publish (retained): meter as JSON
@@ -19,6 +20,7 @@ public:
   void loop();
   // Stops the client and starts it again with the current configuration.
   void restart();
+  // Queue state publishes; loop() sends them throttled so 250 meters don't flood the outbox.
   void publishMeter(size_t index);
   void publishAll();
   bool connected() const { return connected_; }
@@ -37,10 +39,17 @@ private:
   volatile bool connected_ = false;
   volatile bool needPublishAll_ = false;
   String lastEvent_ = "deaktiviert";
+  bool pending_[MAX_METERS]{};
 
   void start();
   void stop();
   void handleSet(const SetMessage &msg);
   void publish(const String &topic, const String &payload, bool retain);
+  void sendPending();
+  static void handleEvent(MqttBridge *self, esp_mqtt_event_handle_t event);
+#if ESP_IDF_VERSION_MAJOR >= 5
+  static void onEventIdf5(void *arg, esp_event_base_t base, int32_t id, void *data);
+#else
   static esp_err_t onEvent(esp_mqtt_event_handle_t event);
+#endif
 };

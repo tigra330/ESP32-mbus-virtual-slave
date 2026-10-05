@@ -3,6 +3,7 @@
 #include <WebServer.h>
 #include <uri/UriBraces.h>
 #include <ArduinoJson.h>
+#include <LittleFS.h>
 #include "ConfigManager.h"
 #include "MBusSlave.h"
 #include "MqttBridge.h"
@@ -15,6 +16,12 @@ HardwareSerial MBusSerial(2);
 MBusSlave mbus(MBusSerial);
 MqttBridge mqtt;
 String wifiModeText = "AP";
+
+// POST /api/config bodies (~45 KB for 250 meters) are streamed here instead of into RAM:
+// WebServer's "plain" argument needs two large contiguous heap blocks and fails above ~40 KB.
+static const char *CONFIG_UPLOAD = "/config.upload";
+File configUpload;
+bool configUploadOk = false;
 
 void startWifi() {
   AppConfig &cfg = configManager.config();
@@ -49,9 +56,35 @@ String currentIp() {
   return wifiModeText == "STA" ? WiFi.localIP().toString() : WiFi.softAPIP().toString();
 }
 
+// Buffers serializer output and passes it to the WebServer in small pieces.
+class ChunkWriter : public Print {
+public:
+  size_t write(uint8_t c) override {
+    buf_[len_++] = c;
+    if (len_ == sizeof(buf_)) flush();
+    return 1;
+  }
+  size_t write(const uint8_t *data, size_t n) override {
+    for (size_t i = 0; i < n; ++i) write(data[i]);
+    return n;
+  }
+  void flush() override {
+    if (len_) server.sendContent(reinterpret_cast<const char *>(buf_), len_);
+    len_ = 0;
+  }
+
+private:
+  uint8_t buf_[1024];
+  size_t len_ = 0;
+};
+
+// Streams the document, so large responses (all meters, config) never need one big String.
 void sendJson(int code, JsonDocument &doc) {
-  String out; serializeJson(doc, out);
-  server.send(code, "application/json", out);
+  server.setContentLength(measureJson(doc));
+  server.send(code, "application/json", "");
+  ChunkWriter out;
+  serializeJson(doc, out);
+  out.flush();
 }
 
 void sendJsonError(int code, const String &message) {
@@ -90,6 +123,15 @@ void setupRestApi() {
   });
   server.on("/api/openapi.json", HTTP_GET, []() {
     server.send_P(200, "application/json", OPENAPI_JSON);
+  });
+
+  // GET /api/values -> [v1, v2, ...] (compact, used by the web UI's auto refresh)
+  server.on("/api/values", HTTP_GET, []() {
+    JsonDocument doc;
+    JsonArray arr = doc.to<JsonArray>();
+    const AppConfig &cfg = configManager.config();
+    for (size_t i = 0; i < cfg.meterCount; ++i) arr.add(cfg.meters[i].value);
+    sendJson(200, doc);
   });
 
   // GET /api/meters -> all meters
@@ -167,13 +209,37 @@ void setupWeb() {
   });
 
   server.on("/api/config", HTTP_GET, []() {
-    server.send(200, "application/json", configManager.toJson(false));
+    JsonDocument doc;
+    configManager.buildJson(doc, false);
+    sendJson(200, doc);
   });
 
+  auto receiveConfig = []() {
+    HTTPRaw &raw = server.raw();
+    switch (raw.status) {
+      case RAW_START:
+        configUpload = LittleFS.open(CONFIG_UPLOAD, "w");
+        configUploadOk = static_cast<bool>(configUpload);
+        break;
+      case RAW_WRITE:
+        if (configUploadOk && configUpload.write(raw.buf, raw.currentSize) != raw.currentSize) configUploadOk = false;
+        break;
+      case RAW_END:
+      case RAW_ABORTED:
+        if (configUpload) configUpload.close();
+        if (raw.status == RAW_ABORTED) configUploadOk = false;
+        break;
+    }
+  };
+
   server.on("/api/config", HTTP_POST, []() {
-    String body = server.arg("plain");
-    if (body.isEmpty()) {
-      server.send(400, "text/plain", "Leere Konfiguration");
+    bool received = configUploadOk;
+    configUploadOk = false;
+    File body = LittleFS.open(CONFIG_UPLOAD, "r");
+    if (!received || !body || body.size() == 0) {
+      if (body) body.close();
+      LittleFS.remove(CONFIG_UPLOAD);
+      server.send(400, "text/plain", "Leere Konfiguration oder Empfang fehlgeschlagen");
       return;
     }
 
@@ -181,7 +247,10 @@ void setupWeb() {
     String oldPass = configManager.config().wifiPassword;
     String oldMqttPass = configManager.config().mqttPassword;
     String error;
-    if (!configManager.fromJson(body, error)) {
+    bool parsed = configManager.fromJson(body, error);
+    body.close();
+    LittleFS.remove(CONFIG_UPLOAD);
+    if (!parsed) {
       server.send(400, "text/plain", "Fehler: " + error);
       return;
     }
@@ -194,7 +263,7 @@ void setupWeb() {
     }
     mqtt.restart();
     server.send(200, "text/plain", "Gespeichert. Änderungen an WLAN/UART werden nach Neustart aktiv.");
-  });
+  }, receiveConfig);
 
   server.on("/api/status", HTTP_GET, []() {
     JsonDocument doc;
@@ -227,7 +296,7 @@ void setup() {
   Serial.println("\nBAScloud M-Bus Virtual Meter v0.1");
 
   if (!configManager.begin()) {
-    Serial.println("NVS initialization failed");
+    Serial.println("Config storage initialization failed");
   }
 
   startWifi();
@@ -235,10 +304,11 @@ void setup() {
   mbus.begin(&configManager.config());
   mqtt.begin(&configManager);
 
-  Serial.printf("M-Bus UART: RX=%d TX=%d Baud=%lu 8E1\n",
+  Serial.printf("M-Bus UART: RX=%d TX=%d Baud=%lu 8E%u\n",
                 configManager.config().mbusRxPin,
                 configManager.config().mbusTxPin,
-                static_cast<unsigned long>(configManager.config().mbusBaud));
+                static_cast<unsigned long>(configManager.config().mbusBaud),
+                configManager.config().mbusStopBits);
 }
 
 void loop() {

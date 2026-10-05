@@ -3,9 +3,11 @@
 
 void MBusSlave::begin(AppConfig *cfg) {
   cfg_ = cfg;
-  serial_.begin(cfg_->mbusBaud, SERIAL_8E1, cfg_->mbusRxPin, cfg_->mbusTxPin);
+  const bool twoStop = cfg_->mbusStopBits == 2;
+  serial_.begin(cfg_->mbusBaud, twoStop ? SERIAL_8E2 : SERIAL_8E1, cfg_->mbusRxPin, cfg_->mbusTxPin);
   rxLen_ = 0;
-  lastEvent_ = "M-Bus UART started at " + String(cfg_->mbusBaud) + " baud 8E1";
+  lastEvent_ = "M-Bus UART started at " + String(cfg_->mbusBaud) + " baud " + (twoStop ? "8E2" : "8E1") +
+               ", byte gap " + String(cfg_->mbusByteGapMs) + " ms";
 }
 
 void MBusSlave::loop() {
@@ -168,8 +170,18 @@ void MBusSlave::sendRspUd(VirtualMeter &meter) {
 }
 
 void MBusSlave::writeFrame(const uint8_t *data, size_t len) {
-  serial_.write(data, len);
-  serial_.flush();
+  const uint8_t gapMs = cfg_ ? cfg_->mbusByteGapMs : 0;
+  if (gapMs == 0) {
+    serial_.write(data, len);
+    serial_.flush();
+  } else {
+    // Idle (mark) after each byte lets the slave's bus-side supply recover during long space runs.
+    for (size_t i = 0; i < len; ++i) {
+      serial_.write(data[i]);
+      serial_.flush();
+      delay(gapMs);
+    }
+  }
   lastTxHex_ = hexString(data, len);
   txFrames_++;
 }

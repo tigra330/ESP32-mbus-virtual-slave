@@ -2,6 +2,9 @@
 #include <WiFi.h>
 #include <ArduinoJson.h>
 
+// Pending state messages are only handed to esp-mqtt while its outbox stays below this size.
+static constexpr int OUTBOX_LIMIT_BYTES = 8192;
+
 void MqttBridge::begin(ConfigManager *config) {
   config_ = config;
   if (!queue_) queue_ = xQueueCreate(40, sizeof(SetMessage));
@@ -30,6 +33,19 @@ void MqttBridge::start() {
   setPrefix_ = cfg.mqttBaseTopic + "/meter/";
 
   esp_mqtt_client_config_t mc{};
+#if ESP_IDF_VERSION_MAJOR >= 5
+  mc.broker.address.uri = uri_.c_str();
+  mc.credentials.client_id = clientId_.c_str();
+  if (!cfg.mqttUser.isEmpty()) {
+    mc.credentials.username = cfg.mqttUser.c_str();
+    mc.credentials.authentication.password = cfg.mqttPassword.c_str();
+  }
+  mc.session.last_will.topic = statusTopic_.c_str();
+  mc.session.last_will.msg = "offline";
+  mc.session.last_will.qos = 1;
+  mc.session.last_will.retain = 1;
+  mc.session.keepalive = 30;
+#else
   mc.uri = uri_.c_str();
   mc.client_id = clientId_.c_str();
   if (!cfg.mqttUser.isEmpty()) {
@@ -43,8 +59,12 @@ void MqttBridge::start() {
   mc.keepalive = 30;
   mc.event_handle = &MqttBridge::onEvent;
   mc.user_context = this;
+#endif
 
   client_ = esp_mqtt_client_init(&mc);
+#if ESP_IDF_VERSION_MAJOR >= 5
+  if (client_) esp_mqtt_client_register_event(client_, MQTT_EVENT_ANY, &MqttBridge::onEventIdf5, this);
+#endif
   if (!client_ || esp_mqtt_client_start(client_) != ESP_OK) {
     lastEvent_ = "Start fehlgeschlagen";
     stop();
@@ -69,9 +89,19 @@ void MqttBridge::restart() {
   start();
 }
 
-// Runs in the esp-mqtt task: only touches the queue and flags, never the configuration.
+#if ESP_IDF_VERSION_MAJOR >= 5
+void MqttBridge::onEventIdf5(void *arg, esp_event_base_t, int32_t, void *data) {
+  handleEvent(static_cast<MqttBridge *>(arg), static_cast<esp_mqtt_event_handle_t>(data));
+}
+#else
 esp_err_t MqttBridge::onEvent(esp_mqtt_event_handle_t event) {
-  MqttBridge *self = static_cast<MqttBridge *>(event->user_context);
+  handleEvent(static_cast<MqttBridge *>(event->user_context), event);
+  return ESP_OK;
+}
+#endif
+
+// Runs in the esp-mqtt task: only touches the queue and flags, never the configuration.
+void MqttBridge::handleEvent(MqttBridge *self, esp_mqtt_event_handle_t event) {
   switch (event->event_id) {
     case MQTT_EVENT_CONNECTED: {
       self->connected_ = true;
@@ -103,7 +133,6 @@ esp_err_t MqttBridge::onEvent(esp_mqtt_event_handle_t event) {
     default:
       break;
   }
-  return ESP_OK;
 }
 
 void MqttBridge::loop() {
@@ -115,6 +144,20 @@ void MqttBridge::loop() {
   if (connected_ && needPublishAll_) {
     needPublishAll_ = false;
     publishAll();
+  }
+  if (connected_) sendPending();
+}
+
+void MqttBridge::sendPending() {
+  const size_t count = config_->config().meterCount;
+  for (size_t i = 0; i < count && i < MAX_METERS; ++i) {
+    if (!pending_[i]) continue;
+    if (esp_mqtt_client_get_outbox_size(client_) >= OUTBOX_LIMIT_BYTES) return;
+    pending_[i] = false;
+    JsonDocument doc;
+    config_->meterToJson(i, doc.to<JsonObject>());
+    String out; serializeJson(doc, out);
+    publish(setPrefix_ + String(i + 1) + "/state", out, true);
   }
 }
 
@@ -156,11 +199,8 @@ void MqttBridge::publish(const String &topic, const String &payload, bool retain
 }
 
 void MqttBridge::publishMeter(size_t index) {
-  if (!client_ || !connected_ || index >= config_->config().meterCount) return;
-  JsonDocument doc;
-  config_->meterToJson(index, doc.to<JsonObject>());
-  String out; serializeJson(doc, out);
-  publish(setPrefix_ + String(index + 1) + "/state", out, true);
+  if (!client_ || !connected_ || index >= config_->config().meterCount || index >= MAX_METERS) return;
+  pending_[index] = true;
 }
 
 void MqttBridge::publishAll() {

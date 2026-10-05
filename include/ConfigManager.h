@@ -12,8 +12,9 @@ public:
   bool save();
   bool load();
   void factoryDefaults();
-  String toJson(bool includePassword = false) const;
+  void buildJson(JsonDocument &doc, bool includePassword = false) const;
   bool fromJson(const String &json, String &error);
+  bool fromJson(Stream &json, String &error);
 
   // Runtime meter values (REST/MQTT). index is 0-based.
   bool setMeterValue(size_t index, double value, String &error);
@@ -32,4 +33,5 @@ private:
 
   bool saveValues();
   void loadValues();
+  bool fromDoc(JsonDocument &doc, String &error);
 };

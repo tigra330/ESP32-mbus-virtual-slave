@@ -1,5 +1,13 @@
 #include "ConfigManager.h"
+#include <LittleFS.h>
 #include <math.h>
+#include <memory>
+#include <vector>
+
+// The configuration (up to ~45 KB JSON for 250 meters) lives in LittleFS; NVS strings are
+// limited to 4000 bytes. Older firmware kept it in NVS key "config", which is migrated once.
+static const char *CONFIG_FILE = "/config.json";
+static const char *CONFIG_TMP = "/config.tmp";
 
 // Values set via REST/MQTT are written as a small blob instead of the whole JSON config.
 // Saved after VALUE_SAVE_QUIET_MS without changes, at the latest VALUE_SAVE_MAX_MS after the first change.
@@ -8,11 +16,14 @@ static constexpr uint32_t VALUE_SAVE_MAX_MS = 60000;
 
 bool ConfigManager::begin() {
   if (!prefs_.begin("mbusvirt", false)) return false;
+  if (!LittleFS.begin(true)) Serial.println("LittleFS mount failed");
   return load();
 }
 
 void ConfigManager::factoryDefaults() {
-  cfg_ = AppConfig{};
+  // AppConfig is too large for the stack.
+  std::unique_ptr<AppConfig> defaults(new AppConfig());
+  cfg_ = *defaults;
   cfg_.meterCount = 10;
   for (size_t i = 0; i < MAX_METERS; ++i) {
     cfg_.meters[i].enabled = i < cfg_.meterCount;
@@ -29,39 +40,72 @@ void ConfigManager::factoryDefaults() {
 }
 
 bool ConfigManager::load() {
-  String json = prefs_.getString("config", "");
-  if (json.isEmpty()) {
-    factoryDefaults();
-    return save();
-  }
   String error;
-  if (!fromJson(json, error)) {
+  File f = LittleFS.open(CONFIG_FILE, "r");
+  if (f) {
+    bool ok = fromJson(f, error);
+    f.close();
+    if (ok) {
+      loadValues();
+      return true;
+    }
     Serial.println("Config invalid, loading defaults: " + error);
     factoryDefaults();
     return save();
   }
-  loadValues();
-  return true;
+
+  String legacy = prefs_.getString("config", "");
+  if (!legacy.isEmpty()) {
+    bool ok = fromJson(legacy, error);
+    if (ok) loadValues();
+    else {
+      Serial.println("Config invalid, loading defaults: " + error);
+      factoryDefaults();
+    }
+    if (!save()) return false;
+    prefs_.remove("config");
+    Serial.println("Config migrated from NVS to LittleFS");
+    return true;
+  }
+
+  factoryDefaults();
+  return save();
 }
 
 bool ConfigManager::save() {
-  String json = toJson(true);
-  bool ok = prefs_.putString("config", json) > 0;
+  bool ok = false;
+  {
+    JsonDocument doc;
+    buildJson(doc, true);
+    File f = LittleFS.open(CONFIG_TMP, "w");
+    if (f) {
+      ok = serializeJson(doc, f) > 0;
+      f.close();
+    }
+  }
+  // Write to a temp file first so a power loss never leaves a truncated config behind.
+  if (ok && !LittleFS.rename(CONFIG_TMP, CONFIG_FILE)) {
+    LittleFS.remove(CONFIG_FILE);
+    ok = LittleFS.rename(CONFIG_TMP, CONFIG_FILE);
+  }
   return saveValues() && ok;
 }
 
 bool ConfigManager::saveValues() {
-  double values[MAX_METERS];
+  std::vector<double> values(MAX_METERS);
   for (size_t i = 0; i < MAX_METERS; ++i) values[i] = cfg_.meters[i].value;
   valuesDirty_ = false;
-  return prefs_.putBytes("values", values, sizeof(values)) == sizeof(values);
+  const size_t bytes = values.size() * sizeof(double);
+  return prefs_.putBytes("values", values.data(), bytes) == bytes;
 }
 
 void ConfigManager::loadValues() {
-  double values[MAX_METERS];
-  if (prefs_.getBytesLength("values") != sizeof(values)) return;
-  if (prefs_.getBytes("values", values, sizeof(values)) != sizeof(values)) return;
-  for (size_t i = 0; i < MAX_METERS; ++i) {
+  // Older firmware stored fewer meters; take whatever is there.
+  size_t len = prefs_.getBytesLength("values");
+  if (len == 0 || len % sizeof(double) != 0 || len > MAX_METERS * sizeof(double)) return;
+  std::vector<double> values(len / sizeof(double));
+  if (prefs_.getBytes("values", values.data(), len) != len) return;
+  for (size_t i = 0; i < values.size(); ++i) {
     if (isfinite(values[i]) && values[i] >= 0) cfg_.meters[i].value = values[i];
   }
 }
@@ -124,11 +168,12 @@ void ConfigManager::meterToJson(size_t index, JsonObject o) const {
   o["maxValue"] = maxValue(m);
 }
 
-String ConfigManager::toJson(bool includePassword) const {
-  JsonDocument doc;
+void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
   doc["wifiSsid"] = cfg_.wifiSsid;
   doc["wifiPassword"] = includePassword ? cfg_.wifiPassword : "";
   doc["mbusBaud"] = cfg_.mbusBaud;
+  doc["mbusStopBits"] = cfg_.mbusStopBits;
+  doc["mbusByteGapMs"] = cfg_.mbusByteGapMs;
   doc["mbusRxPin"] = cfg_.mbusRxPin;
   doc["mbusTxPin"] = cfg_.mbusTxPin;
   doc["meterCount"] = cfg_.meterCount;
@@ -153,10 +198,6 @@ String ConfigManager::toJson(bool includePassword) const {
     m["unit"] = cfg_.meters[i].unit;
     m["resolutionExp"] = cfg_.meters[i].resolutionExp;
   }
-
-  String out;
-  serializeJson(doc, out);
-  return out;
 }
 
 bool ConfigManager::fromJson(const String &json, String &error) {
@@ -166,10 +207,25 @@ bool ConfigManager::fromJson(const String &json, String &error) {
     error = e.c_str();
     return false;
   }
+  return fromDoc(doc, error);
+}
 
+bool ConfigManager::fromJson(Stream &json, String &error) {
+  JsonDocument doc;
+  DeserializationError e = deserializeJson(doc, json);
+  if (e) {
+    error = e.c_str();
+    return false;
+  }
+  return fromDoc(doc, error);
+}
+
+bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
   if (!doc["wifiSsid"].isNull()) cfg_.wifiSsid = doc["wifiSsid"].as<String>();
   if (!doc["wifiPassword"].isNull()) cfg_.wifiPassword = doc["wifiPassword"].as<String>();
   cfg_.mbusBaud = doc["mbusBaud"] | 2400;
+  cfg_.mbusStopBits = (doc["mbusStopBits"] | 1) == 2 ? 2 : 1;
+  cfg_.mbusByteGapMs = constrain(doc["mbusByteGapMs"] | 0, 0, 20);
   cfg_.mbusRxPin = doc["mbusRxPin"] | 16;
   cfg_.mbusTxPin = doc["mbusTxPin"] | 17;
 
