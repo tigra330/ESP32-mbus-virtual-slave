@@ -21,6 +21,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - WLAN-Client; bei fehlender/fehlerhafter WLAN-Konfiguration startet ein Access Point
 - M-Bus-Monitor im Browser mit letztem RX-/TX-Telegramm
 - M-Bus UART standardmäßig 2400 Baud, 8E1
+- optional 2 Stoppbits und Pause nach jedem Byte für Slave-Platinen mit schwacher Busversorgung (siehe [Sende-Workarounds](#sende-workarounds-stoppbits--byte-pause))
 
 ## Wichtiger Hinweis
 
@@ -45,6 +46,33 @@ Die exakten Pin-Namen hängen von deiner TSS721-Platine ab. Logisch gilt:
 
 Die UART-Pins können in der Weboberfläche geändert werden.
 
+## Sende-Workarounds (Stoppbits / Byte-Pause)
+
+In der Weboberfläche unter **Gerät** gibt es zwei Einstellungen für das Senden. Beide werden erst nach einem Neustart aktiv.
+
+| Feld | Standard | Beschreibung |
+|---|---|---|
+| M-Bus Stoppbits | 1 (8E1) | 2 = 8E2: zusätzliches Stoppbit nach jedem Byte |
+| Pause nach jedem Byte | 0 ms | 0–20 ms Ruhepegel (Mark) nach jedem gesendeten Byte |
+
+Mit den Standardwerten sendet der ESP32 normgerecht nach EN 13757-2. Die Optionen sind ein Workaround für Slave-Platinen, deren Sendepfad auf der Busseite aus dem STC-Puffer des TSS721 versorgt wird.
+
+**Symptom:** Kurze Antworten (`E5`) funktionieren und ein Scan findet die Zähler, aber das Auslesen scheitert. Der Master empfängt den Long Frame nur bis zu den ersten aufeinanderfolgenden `00`-Bytes (Access-Nummer, Status, Signatur), danach Müll oder nichts. Das Echo des TSS721 im M-Bus-Monitor (RX) ist an derselben Stelle abgeschnitten.
+
+**Ursache:** Ein `0x00`-Byte bedeutet in 8E1 zehn Bitzeiten Space mit nur einem Stoppbit dazwischen. Bei mehreren Nullbytes hintereinander leert sich der Puffer auf der Busseite, und der TSS721 hört mitten im Telegramm auf zu senden.
+
+**Getestet mit MikroE M-BUS Slave Click und Relay M-Bus Micro-Master USB (libmbus, 2400 Baud):**
+
+| Einstellung | Ergebnis |
+|---|---|
+| 8E1, 0 ms | Abbruch nach dem 1. Nullbyte |
+| 8E2, 0 ms | Abbruch ein Byte später |
+| 8E2, 10 ms | vollständiges Telegramm (27 Bytes) |
+
+Mit Pause dauert eine Antwort länger (27 Bytes × 10 ms ≈ 270 ms zusätzlich). libmbus und die meisten Master tolerieren das. Streng genommen sind Pausen innerhalb eines Telegramms nach Norm aber nicht vorgesehen.
+
+**Dauerhafte Lösung an der Hardware** (MikroE M-BUS Slave Click): C1 (22 µF am STC-Pin) z. B. auf 100 µF / 50 V vergrößern, oder R6 (1,5 kΩ vor dem Optokoppler OC2) hochohmiger machen, z. B. 4,7 kΩ. Danach mit 8E1 und 0 ms testen.
+
 ## PlatformIO
 
 Standard-Board:
@@ -54,6 +82,10 @@ board = esp32dev
 ```
 
 Falls du ein anderes ESP32-Board nutzt, ändere `board` in `platformio.ini`.
+
+Die Firmware baut mit Arduino-ESP32 2.x (ESP-IDF 4.4) und 3.x (ESP-IDF 5.x). Die unterschiedliche esp-mqtt-API wird per `ESP_IDF_VERSION_MAJOR` umgeschaltet.
+
+Die Konfiguration liegt auf LittleFS in der `spiffs`-Partition der Standard-Partitionstabelle. Eine eigene Partitionstabelle muss diese Partition ebenfalls enthalten.
 
 Kompilieren:
 
@@ -171,6 +203,8 @@ Beispiel für eine `state`-Nachricht:
 
 Der MQTT-Client (esp-mqtt aus dem ESP-IDF) läuft in einer eigenen Task. Ist der Broker nicht erreichbar, beantwortet der ESP32 M-Bus-Abfragen trotzdem ohne Verzögerung.
 
+`state`-Nachrichten werden gedrosselt gesendet: Der ESP32 übergibt neue Nachrichten erst, wenn die Outbox des MQTT-Clients unter 8 KB liegt. Nach dem Verbinden oder bei Änderungen an vielen Zählern verteilen sich die Nachrichten daher auf einen kurzen Zeitraum, statt den RAM auf einmal zu belegen.
+
 **Hinweis zu Retain:** Wird `set` mit Retain veröffentlicht, setzt der Broker diesen Wert nach jedem Neuverbinden erneut und überschreibt damit z. B. einen neueren Wert aus der REST-API.
 
 ## REST-API
@@ -183,6 +217,7 @@ Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`
 |---|---|---|---|
 | GET | `/api/meters` | – | alle Zähler |
 | GET | `/api/meters/<n>` | – | ein Zähler |
+| GET | `/api/values` | – | nur die Zählerstände als Array `[v1, v2, …]` (kompakt, für die Weboberfläche) |
 | PUT | `/api/meters/<n>` | `{"value":123.456}` | Zählerstand setzen |
 | PUT | `/api/meters` | `[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]` oder `{"meters":[...]}` | mehrere Zähler setzen |
 
@@ -203,9 +238,15 @@ Jede Änderung per REST wird zusätzlich als MQTT-`state` veröffentlicht.
 
 **Sicherheit:** Die REST-API hat wie die Weboberfläche keine Authentifizierung. Jeder im Netz kann Werte setzen.
 
-## Speicherung der Zählerstände
+## Speicherung
 
-Werte, die per MQTT oder REST gesetzt werden, sind sofort per M-Bus abrufbar. Im Flash gespeichert werden sie verzögert: nach 10 s ohne weitere Änderung, spätestens 60 s nach der ersten Änderung. Die Werte liegen in einem eigenen kleinen NVS-Block, getrennt von der Konfiguration. Das schont den Flash auch bei häufigen Updates.
+Die **Konfiguration** liegt als `/config.json` auf LittleFS. Bei 250 Zählern sind das etwa 45 KB, das passt nicht in einen NVS-String (max. 4000 Bytes). Gespeichert wird erst in eine Temp-Datei, die danach umbenannt wird. Ein Stromausfall beim Speichern hinterlässt so keine kaputte Konfiguration.
+
+Firmware-Versionen vor der LittleFS-Umstellung haben die Konfiguration im NVS gespeichert. Sie wird beim ersten Start automatisch übernommen und danach im NVS gelöscht (serielle Ausgabe: `Config migrated from NVS to LittleFS`).
+
+Große Konfigurationen werden in kleinen Stücken übertragen, damit kein großer zusammenhängender Speicherblock im RAM nötig ist. Beim Speichern schreibt der ESP32 den Request-Body direkt in eine Datei, beim Abrufen sendet er das JSON stückweise.
+
+**Zählerstände**, die per MQTT oder REST gesetzt werden, sind sofort per M-Bus abrufbar. Im Flash gespeichert werden sie verzögert: nach 10 s ohne weitere Änderung, spätestens 60 s nach der ersten Änderung. Die Werte liegen in einem eigenen kleinen NVS-Block (250 × 8 Bytes), getrennt von der Konfiguration. Das schont den Flash auch bei häufigen Updates.
 
 Die Weboberfläche lädt die Zählerstände automatisch neu, sodass Änderungen per MQTT oder REST direkt sichtbar sind. Ein Feld, das gerade bearbeitet wird, wird dabei nicht überschrieben und bleibt gelb markiert, bis gespeichert wird. Das Intervall wird oben auf der Seite unter der Überschrift eingestellt (Aus, 1 … 60 s, Standard 2 s) und im Browser gespeichert.
 
