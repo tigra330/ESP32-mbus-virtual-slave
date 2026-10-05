@@ -53,9 +53,9 @@ In der Weboberfläche unter **Gerät** gibt es zwei Einstellungen für das Sende
 | Feld | Standard | Beschreibung |
 |---|---|---|
 | M-Bus Stoppbits | 1 (8E1) | 2 = 8E2: zusätzliches Stoppbit nach jedem Byte |
-| Pause nach jedem Byte | 0 ms | 0–20 ms Ruhepegel (Mark) nach jedem gesendeten Byte |
+| Pause nach jedem Byte | 10 ms | 0–20 ms Ruhepegel (Mark) nach jedem gesendeten Byte, 0 = normgerecht ohne Pause |
 
-Mit den Standardwerten sendet der ESP32 normgerecht nach EN 13757-2. Die Optionen sind ein Workaround für Slave-Platinen, deren Sendepfad auf der Busseite aus dem STC-Puffer des TSS721 versorgt wird.
+Mit 1 Stoppbit und 0 ms Pause sendet der ESP32 normgerecht nach EN 13757-2. Die Pause ist standardmäßig auf 10 ms gesetzt, weil das mit dem MikroE M-BUS Slave Click getestet funktioniert. Die Optionen sind ein Workaround für Slave-Platinen, deren Sendepfad auf der Busseite aus dem STC-Puffer des TSS721 versorgt wird.
 
 **Symptom:** Kurze Antworten (`E5`) funktionieren und ein Scan findet die Zähler, aber das Auslesen scheitert. Der Master empfängt den Long Frame nur bis zu den ersten aufeinanderfolgenden `00`-Bytes (Access-Nummer, Status, Signatur), danach Müll oder nichts. Das Echo des TSS721 im M-Bus-Monitor (RX) ist an derselben Stelle abgeschnitten.
 

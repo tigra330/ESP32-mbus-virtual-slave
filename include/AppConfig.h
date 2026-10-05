@@ -22,7 +22,7 @@ struct AppConfig {
   String wifiPassword;
   uint32_t mbusBaud = 2400;
   uint8_t mbusStopBits = 1;     // 2 = workaround for slaves whose bus-side supply sags on long space runs
-  uint8_t mbusByteGapMs = 0;    // idle time after each sent byte, same workaround (0 = standard, max 20)
+  uint8_t mbusByteGapMs = 10;   // idle time after each sent byte, same workaround (0 = standard-compliant, max 20)
   int mbusRxPin = 16;
   int mbusTxPin = 17;
   size_t meterCount = 10;

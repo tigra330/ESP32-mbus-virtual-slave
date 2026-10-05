@@ -225,7 +225,7 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
   if (!doc["wifiPassword"].isNull()) cfg_.wifiPassword = doc["wifiPassword"].as<String>();
   cfg_.mbusBaud = doc["mbusBaud"] | 2400;
   cfg_.mbusStopBits = (doc["mbusStopBits"] | 1) == 2 ? 2 : 1;
-  cfg_.mbusByteGapMs = constrain(doc["mbusByteGapMs"] | 0, 0, 20);
+  cfg_.mbusByteGapMs = constrain(doc["mbusByteGapMs"] | 10, 0, 20);
   cfg_.mbusRxPin = doc["mbusRxPin"] | 16;
   cfg_.mbusTxPin = doc["mbusTxPin"] | 17;
 
