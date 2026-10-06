@@ -213,15 +213,22 @@ void MBusSlave::sendSensorRspUd() {
   app[p++] = 0x65;
   putInt16(valid ? sensor_->temperature() * 100.0 : 0);
 
-  // Relative humidity: DIF 0x02, VIF 0xFB + VIFE 0x1A = 10^-1 %.
-  app[p++] = 0x02;
-  app[p++] = 0xFB;
-  app[p++] = 0x1A;
-  putInt16(valid ? sensor_->humidity() * 10.0 : 0);
+  // DIF 0x02 (16-bit) + plain-text VIF 0x7C: libmbus passes the text through as the unit
+  // without scaling. The text is sent length-prefixed and in reverse order.
+  auto putTextVif = [&](const char *unit) {
+    const size_t len = strlen(unit);
+    app[p++] = 0x02;
+    app[p++] = 0x7C;
+    app[p++] = static_cast<uint8_t>(len);
+    for (size_t i = len; i > 0; --i) app[p++] = static_cast<uint8_t>(unit[i - 1]);
+  };
 
-  // Pressure: DIF 0x02, VIF 0x68 = 10^-3 bar = 1 mbar (hPa).
-  app[p++] = 0x02;
-  app[p++] = 0x68;
+  // Relative humidity in 10^-2 %. libmbus does not know VIF 0xFB 0x1A ("Reserved (0x1a)").
+  putTextVif("1e-2 %RH");
+  putInt16(valid ? sensor_->humidity() * 100.0 : 0);
+
+  // Pressure in hPa. Standard VIF 0x68 (mbar) would show up as "Pressure (m bar)".
+  putTextVif("hPa");
   putInt16(valid ? sensor_->pressure() : 0);
 
   sendLongFrame(sc.primaryAddress, app, p);

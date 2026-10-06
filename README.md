@@ -73,15 +73,17 @@ Der ESP32 liest den Sensor alle 2 s aus und beantwortet M-Bus-Abfragen aus diese
 | Wert | DIF | VIF | Auflösung | Bereich |
 |---|---|---|---|---|
 | Temperatur | `0x02` (16 Bit) | `0x65` (Außentemperatur) | 0,01 °C | −327,68 … 327,67 °C |
-| rel. Luftfeuchte | `0x02` (16 Bit) | `0xFB 0x1A` | 0,1 % | 0 … 100 % |
-| Luftdruck | `0x02` (16 Bit) | `0x68` | 1 mbar = 1 hPa | |
+| rel. Luftfeuchte | `0x02` (16 Bit) | `0x7C` + Klartext-Einheit `1e-2 %RH` | 0,01 % | 0 … 100 % |
+| Luftdruck | `0x02` (16 Bit) | `0x7C` + Klartext-Einheit `hPa` | 1 hPa | |
 
-Beispiel 21,53 °C, 45,2 %, 1013 hPa:
+Beispiel 21,53 °C, 45,20 %, 1013 hPa:
 
 ```text
 02 65 69 08        Temperatur 2153 × 0,01 °C
-02 FB 1A C4 01     Feuchte 452 × 0,1 %
-02 68 F5 03        Druck 1013 mbar
+02 7C 08 48 52 25 20 32 2D 65 31 A8 11
+                   Feuchte 4520 × 0,01 % (Einheit "1e-2 %RH", Text rückwärts)
+02 7C 03 61 50 68 F5 03
+                   Druck 1013 hPa (Einheit "hPa", Text rückwärts)
 ```
 
 Liefert der Sensor keine gültigen Werte (nicht gefunden oder abgezogen), antwortet der Slave trotzdem, mit Status-Byte `0x10` (vorübergehender Fehler) und den Werten 0.
