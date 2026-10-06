@@ -16,6 +16,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - einstellbare Auflösung pro Zähler (0,001 … 10)
 - Wärmezähler zusätzlich mit Durchfluss, Vorlauf- und Rücklauftemperatur
 - Zählertyp Strom 2-Richtung mit den OBIS-Registern 1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2
+- optionaler BME280-Sensor (Temperatur, Luftfeuchte, Luftdruck) als eigener M-Bus-Slave mit einstellbarer Primäradresse
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
 - Weboberfläche zur Konfiguration
@@ -47,6 +48,45 @@ Die exakten Pin-Namen hängen von deiner TSS721-Platine ab. Logisch gilt:
 **Vor dem Anschluss die Logikpegel deiner konkreten TSS721-Platine prüfen.** Der nackte TSS721 und fertige Module können sich in Beschaltung und Pegeln unterscheiden.
 
 Die UART-Pins können in der Weboberfläche geändert werden.
+
+## BME280-Sensor
+
+Ein BME280 kann per I²C angeschlossen werden. Er erscheint auf dem M-Bus als eigener Slave mit eigener Primär- und Sekundäradresse, unabhängig von den virtuellen Zählern.
+
+**Anschluss** (Standard, in der Weboberfläche änderbar):
+
+| BME280 | ESP32 |
+|---|---|
+| VIN / VCC | 3,3 V |
+| GND | GND |
+| SDA | GPIO 21 |
+| SCL | GPIO 22 |
+| SDO | GND → I²C-Adresse `0x76`, VCC → `0x77` |
+| CSB | VCC (I²C-Modus; bei den meisten Breakout-Boards schon so beschaltet) |
+
+**Einstellungen** in der Karte **BME280-Sensor**: aktiv, Name, Primäradresse (1–250), Sekundäradresse, Manufacturer, Version, SDA/SCL-Pin, I²C-Adresse. Die Primäradresse darf nicht von einem aktiven Zähler belegt sein, sonst wird das Speichern abgelehnt. Aktivieren und Änderungen an den I²C-Pins werden nach einem Neustart wirksam. Standard ist deaktiviert, Primäradresse 250, Sekundäradresse 20000001.
+
+Der ESP32 liest den Sensor alle 2 s aus und beantwortet M-Bus-Abfragen aus diesen Werten. Ein fehlender Sensor wird alle 10 s erneut gesucht. Die aktuellen Messwerte stehen in der Sensor-Karte, im M-Bus-Monitor und unter `GET /api/status` (`sensor`).
+
+**M-Bus-Telegramm:** Medium `0x1B` (Raumsensor), drei Datensätze:
+
+| Wert | DIF | VIF | Auflösung | Bereich |
+|---|---|---|---|---|
+| Temperatur | `0x02` (16 Bit) | `0x65` (Außentemperatur) | 0,01 °C | −327,68 … 327,67 °C |
+| rel. Luftfeuchte | `0x02` (16 Bit) | `0xFB 0x1A` | 0,1 % | 0 … 100 % |
+| Luftdruck | `0x02` (16 Bit) | `0x68` | 1 mbar = 1 hPa | |
+
+Beispiel 21,53 °C, 45,2 %, 1013 hPa:
+
+```text
+02 65 69 08        Temperatur 2153 × 0,01 °C
+02 FB 1A C4 01     Feuchte 452 × 0,1 %
+02 68 F5 03        Druck 1013 mbar
+```
+
+Liefert der Sensor keine gültigen Werte (nicht gefunden oder abgezogen), antwortet der Slave trotzdem, mit Status-Byte `0x10` (vorübergehender Fehler) und den Werten 0.
+
+Der Sensor misst auch die Eigenwärme von ESP32 und Netzteil mit. Für genaue Raumtemperaturen den BME280 mit etwas Abstand (Kabel) zum ESP32 montieren.
 
 ## Sende-Workarounds (Stoppbits / Byte-Pause)
 

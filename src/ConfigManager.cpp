@@ -356,6 +356,17 @@ void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
   doc["mqttPassword"] = includePassword ? cfg_.mqttPassword : "";
   doc["mqttBaseTopic"] = cfg_.mqttBaseTopic;
 
+  JsonObject s = doc["sensor"].to<JsonObject>();
+  s["enabled"] = cfg_.sensor.enabled;
+  s["name"] = cfg_.sensor.name;
+  s["primaryAddress"] = cfg_.sensor.primaryAddress;
+  s["secondaryAddress"] = cfg_.sensor.secondaryAddress;
+  s["manufacturer"] = cfg_.sensor.manufacturer;
+  s["version"] = cfg_.sensor.version;
+  s["sdaPin"] = cfg_.sensor.sdaPin;
+  s["sclPin"] = cfg_.sensor.sclPin;
+  s["i2cAddress"] = cfg_.sensor.i2cAddress;
+
   JsonArray meters = doc["meters"].to<JsonArray>();
   for (size_t i = 0; i < cfg_.meterCount && i < MAX_METERS; ++i) {
     JsonObject m = meters.add<JsonObject>();
@@ -482,7 +493,31 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
     cfg_.meters[i].returnTemp = isfinite(returnTemp) ? constrain(returnTemp, TEMP_MIN, TEMP_MAX) : 0.0;
   }
 
+  JsonObject s = doc["sensor"].as<JsonObject>();
+  SensorConfig &sc = cfg_.sensor;
+  sc.enabled = s["enabled"] | false;
+  sc.name = s["name"] | "BME280";
+  if (sc.name.isEmpty()) sc.name = "BME280";
+  sc.primaryAddress = static_cast<uint8_t>(constrain(s["primaryAddress"] | 250, 1, 250));
+  sc.secondaryAddress = s["secondaryAddress"] | 20000001UL;
+  sc.manufacturer = s["manufacturer"] | "BAS";
+  sc.manufacturer.toUpperCase();
+  if (sc.manufacturer.length() != 3) sc.manufacturer = "BAS";
+  sc.version = s["version"] | 1;
+  sc.sdaPin = s["sdaPin"] | 21;
+  sc.sclPin = s["sclPin"] | 22;
+  sc.i2cAddress = (s["i2cAddress"] | 0x76) == 0x77 ? 0x77 : 0x76;
+
   // Reject duplicate active primary addresses.
+  if (sc.enabled) {
+    for (size_t i = 0; i < cfg_.meterCount; ++i) {
+      if (cfg_.meters[i].enabled && cfg_.meters[i].primaryAddress == sc.primaryAddress) {
+        error = "Primäradresse " + String(sc.primaryAddress) + " des BME280-Sensors ist schon von Zähler " +
+                String(i + 1) + " belegt";
+        return false;
+      }
+    }
+  }
   for (size_t i = 0; i < cfg_.meterCount; ++i) {
     if (!cfg_.meters[i].enabled) continue;
     for (size_t j = i + 1; j < cfg_.meterCount; ++j) {

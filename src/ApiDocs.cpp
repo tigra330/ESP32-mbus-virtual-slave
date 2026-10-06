@@ -78,7 +78,7 @@ Body: Array oder <code>{"meters":[…]}</code>. Zuerst werden alle Einträge gep
 <textarea id="b4">[{"index":1,"value":10},{"index":2,"value":20.5}]</textarea>
 <div class="row"><button onclick="call('PUT','/api/meters',v('b4'),'r4')">Ausprobieren</button></div><div id="r4" class="res"></div></div>
 
-<div class="ep"><h3><span class="m get">GET</span><code>/api/status</code></h3><div class="small">Gerätestatus: IP, WLAN-Modus, M-Bus-Zähler und letzte Telegramme, MQTT-Status.</div>
+<div class="ep"><h3><span class="m get">GET</span><code>/api/status</code></h3><div class="small">Gerätestatus: IP, WLAN-Modus, M-Bus-Zähler und letzte Telegramme, MQTT-Status, BME280-Messwerte.</div>
 <div class="row"><button onclick="call('GET','/api/status',null,'r5')">Ausprobieren</button></div><div id="r5" class="res"></div></div>
 </div>
 
@@ -122,7 +122,7 @@ const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "put":{"summary":"Zählerstand setzen","description":"Mindestens ein Feld angeben. flow/flowTemp/returnTemp nur bei Wärmezählern, 1.8.1 ... 2.8.2 nur bei Strom 2-Richtung.","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Update"},"example":{"value":123.456}}}},
 "responses":{"200":{"description":"Geänderter Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"400":{"$ref":"#/components/responses/Error"},"404":{"$ref":"#/components/responses/Error"}}}},
 "/api/status":{
-"get":{"summary":"Gerätestatus","responses":{"200":{"description":"Status","content":{"application/json":{"schema":{"type":"object","properties":{"ip":{"type":"string"},"wifiMode":{"type":"string"},"rxFrames":{"type":"integer"},"txFrames":{"type":"integer"},"lastEvent":{"type":"string"},"lastRx":{"type":"string"},"lastTx":{"type":"string"},"mqtt":{"type":"string"}}}}}}}}}
+"get":{"summary":"Gerätestatus","responses":{"200":{"description":"Status","content":{"application/json":{"schema":{"type":"object","properties":{"ip":{"type":"string"},"wifiMode":{"type":"string"},"rxFrames":{"type":"integer"},"txFrames":{"type":"integer"},"lastEvent":{"type":"string"},"lastRx":{"type":"string"},"lastTx":{"type":"string"},"mqtt":{"type":"string"},"sensor":{"type":"string","description":"BME280: Messwerte oder Fehlertext"}}}}}}}}}
 },
 "components":{
 "schemas":{

@@ -7,6 +7,7 @@
 #include "ConfigManager.h"
 #include "MBusSlave.h"
 #include "MqttBridge.h"
+#include "Bme280Sensor.h"
 #include "WebUi.h"
 #include "ApiDocs.h"
 
@@ -15,6 +16,7 @@ WebServer server(80);
 HardwareSerial MBusSerial(2);
 MBusSlave mbus(MBusSerial);
 MqttBridge mqtt;
+Bme280Sensor bme280;
 String wifiModeText = "AP";
 
 // POST /api/config bodies (~45 KB for 250 meters) are streamed here instead of into RAM:
@@ -280,7 +282,7 @@ void setupWeb() {
       return;
     }
     mqtt.restart();
-    server.send(200, "text/plain", "Gespeichert. Änderungen an WLAN/UART werden nach Neustart aktiv.");
+    server.send(200, "text/plain", "Gespeichert. Änderungen an WLAN, UART und BME280 (Aktivieren, I²C-Pins) werden nach Neustart aktiv.");
   }, receiveConfig);
 
   server.on("/api/status", HTTP_GET, []() {
@@ -293,6 +295,7 @@ void setupWeb() {
     doc["lastRx"] = mbus.lastRxHex();
     doc["lastTx"] = mbus.lastTxHex();
     doc["mqtt"] = mqtt.statusText();
+    doc["sensor"] = bme280.statusText();
     String out; serializeJson(doc, out);
     server.send(200, "application/json", out);
   });
@@ -319,7 +322,8 @@ void setup() {
 
   startWifi();
   setupWeb();
-  mbus.begin(&configManager.config());
+  bme280.begin(&configManager.config().sensor);
+  mbus.begin(&configManager.config(), &bme280);
   mqtt.begin(&configManager);
 
   Serial.printf("M-Bus UART: RX=%d TX=%d Baud=%lu 8E%u\n",
@@ -332,6 +336,7 @@ void setup() {
 void loop() {
   server.handleClient();
   mbus.loop();
+  bme280.loop();
   mqtt.loop();
   configManager.loop();
   delay(1);

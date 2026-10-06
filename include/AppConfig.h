@@ -35,6 +35,20 @@ struct VirtualMeter {
 inline bool isHeatMeter(const VirtualMeter &m) { return m.medium == 0x04 || m.medium == 0x0C; }
 inline bool isBidirectionalMeter(const VirtualMeter &m) { return m.bidirectional && m.medium == 0x02; }
 
+// BME280 room sensor (temperature, humidity, pressure), answers as its own M-Bus slave.
+struct SensorConfig {
+  bool enabled = false;
+  String name = "BME280";
+  uint8_t primaryAddress = 250;
+  uint32_t secondaryAddress = 20000001;
+  String manufacturer = "BAS";
+  uint8_t version = 1;
+  int sdaPin = 21;
+  int sclPin = 22;
+  uint8_t i2cAddress = 0x76;    // 0x76 (SDO to GND) or 0x77 (SDO to VCC)
+  uint8_t accessNumber = 0;     // runtime RSP_UD access counter
+};
+
 struct AppConfig {
   String wifiSsid;
   String wifiPassword;
@@ -51,4 +65,5 @@ struct AppConfig {
   String mqttPassword;
   String mqttBaseTopic = "bascloud/mbus";
   VirtualMeter meters[MAX_METERS];
+  SensorConfig sensor;
 };

@@ -1,8 +1,14 @@
 #include "MBusSlave.h"
 #include <math.h>
 
-void MBusSlave::begin(AppConfig *cfg) {
+// Status byte bit 4: temporary error (here: BME280 not answering).
+static constexpr uint8_t STATUS_TEMPORARY_ERROR = 0x10;
+// EN 13757-3 medium 0x1B: room sensor (e.g. temperature or humidity).
+static constexpr uint8_t MEDIUM_ROOM_SENSOR = 0x1B;
+
+void MBusSlave::begin(AppConfig *cfg, Bme280Sensor *sensor) {
   cfg_ = cfg;
+  sensor_ = sensor;
   const bool twoStop = cfg_->mbusStopBits == 2;
   serial_.begin(cfg_->mbusBaud, twoStop ? SERIAL_8E2 : SERIAL_8E1, cfg_->mbusRxPin, cfg_->mbusTxPin);
   rxLen_ = 0;
@@ -56,8 +62,9 @@ void MBusSlave::processFrame(const uint8_t *data, size_t len) {
       return;
     }
 
-    VirtualMeter *meter = findMeter(address);
-    if (!meter) {
+    const bool isSensor = cfg_->sensor.enabled && address == cfg_->sensor.primaryAddress;
+    VirtualMeter *meter = isSensor ? nullptr : findMeter(address);
+    if (!meter && !isSensor) {
       lastEvent_ = "No virtual meter for primary address " + String(address);
       return;
     }
@@ -71,9 +78,10 @@ void MBusSlave::processFrame(const uint8_t *data, size_t len) {
     }
 
     if (function == 0x0B) { // REQ_UD2 = 0x5B / 0x7B
-      lastEvent_ = "REQ_UD2 for address " + String(address) + " (" + meter->name + ")";
+      lastEvent_ = "REQ_UD2 for address " + String(address) + " (" + (isSensor ? cfg_->sensor.name : meter->name) + ")";
       delayMicroseconds((11000000UL + cfg_->mbusBaud - 1) / cfg_->mbusBaud); // >= 11 bit times
-      sendRspUd(*meter);
+      if (isSensor) sendSensorRspUd();
+      else sendRspUd(*meter);
       return;
     }
 
@@ -110,23 +118,8 @@ void MBusSlave::encodeBcd8(uint32_t number, uint8_t out[4]) {
 
 void MBusSlave::sendRspUd(VirtualMeter &meter) {
   uint8_t app[96]{};
-  size_t p = 0;
-
-  // CI 0x72: variable data structure, mode 1 (LSB first)
-  uint8_t id[4];
-  encodeBcd8(meter.secondaryAddress, id);
-  memcpy(app + p, id, 4); p += 4;
-
-  uint16_t man = encodeManufacturer(meter.manufacturer);
-  app[p++] = static_cast<uint8_t>(man & 0xFF);
-  app[p++] = static_cast<uint8_t>((man >> 8) & 0xFF);
-  app[p++] = meter.version;
-  app[p++] = meter.medium;
-
-  app[p++] = meter.accessNumber++;
-  app[p++] = 0x00; // status
-  app[p++] = 0x00; // signature low
-  app[p++] = 0x00; // signature high
+  size_t p = putHeader(app, meter.secondaryAddress, meter.manufacturer, meter.version, meter.medium,
+                       meter.accessNumber++, 0x00);
 
   // One 32-bit integer data record, resolution 10^resolutionExp of the unit.
   // m3: VIF 0x10+n = 10^(n-6) m3. kWh: VIF 0x00+n = 10^(n-3) Wh = 10^(n-6) kWh.
@@ -196,7 +189,66 @@ void MBusSlave::sendRspUd(VirtualMeter &meter) {
     }
   }
 
-  uint8_t frame[96]{};
+  sendLongFrame(meter.primaryAddress, app, p);
+}
+
+void MBusSlave::sendSensorRspUd() {
+  SensorConfig &sc = cfg_->sensor;
+  const bool valid = sensor_ && sensor_->valid();
+  uint8_t app[48]{};
+  size_t p = putHeader(app, sc.secondaryAddress, sc.manufacturer, sc.version, MEDIUM_ROOM_SENSOR, sc.accessNumber++,
+                       valid ? 0x00 : STATUS_TEMPORARY_ERROR);
+
+  auto putInt16 = [&](double v) {
+    long r = valid ? lround(v) : 0;
+    if (r < -32768) r = -32768;
+    if (r > 32767) r = 32767;
+    uint16_t raw = static_cast<uint16_t>(static_cast<int16_t>(r));
+    app[p++] = static_cast<uint8_t>(raw & 0xFF);
+    app[p++] = static_cast<uint8_t>(raw >> 8);
+  };
+
+  // Temperature: DIF 0x02 (16-bit), VIF 0x65 = external temperature 10^-2 °C.
+  app[p++] = 0x02;
+  app[p++] = 0x65;
+  putInt16(valid ? sensor_->temperature() * 100.0 : 0);
+
+  // Relative humidity: DIF 0x02, VIF 0xFB + VIFE 0x1A = 10^-1 %.
+  app[p++] = 0x02;
+  app[p++] = 0xFB;
+  app[p++] = 0x1A;
+  putInt16(valid ? sensor_->humidity() * 10.0 : 0);
+
+  // Pressure: DIF 0x02, VIF 0x68 = 10^-3 bar = 1 mbar (hPa).
+  app[p++] = 0x02;
+  app[p++] = 0x68;
+  putInt16(valid ? sensor_->pressure() : 0);
+
+  sendLongFrame(sc.primaryAddress, app, p);
+}
+
+// CI 0x72 header: ID, manufacturer, version, medium, access number, status, signature.
+size_t MBusSlave::putHeader(uint8_t *app, uint32_t secondaryAddress, const String &manufacturer, uint8_t version,
+                            uint8_t medium, uint8_t accessNumber, uint8_t status) {
+  size_t p = 0;
+  // CI 0x72: variable data structure, mode 1 (LSB first)
+  encodeBcd8(secondaryAddress, app + p); p += 4;
+
+  uint16_t man = encodeManufacturer(manufacturer);
+  app[p++] = static_cast<uint8_t>(man & 0xFF);
+  app[p++] = static_cast<uint8_t>((man >> 8) & 0xFF);
+  app[p++] = version;
+  app[p++] = medium;
+
+  app[p++] = accessNumber;
+  app[p++] = status;
+  app[p++] = 0x00; // signature low
+  app[p++] = 0x00; // signature high
+  return p;
+}
+
+void MBusSlave::sendLongFrame(uint8_t primaryAddress, const uint8_t *app, size_t p) {
+  uint8_t frame[128]{};
   size_t f = 0;
   uint8_t L = static_cast<uint8_t>(3 + p); // C + A + CI + app payload
   frame[f++] = 0x68;
@@ -204,7 +256,7 @@ void MBusSlave::sendRspUd(VirtualMeter &meter) {
   frame[f++] = L;
   frame[f++] = 0x68;
   frame[f++] = 0x08; // RSP_UD, ACD=0, DFC=0
-  frame[f++] = meter.primaryAddress;
+  frame[f++] = primaryAddress;
   frame[f++] = 0x72;
   memcpy(frame + f, app, p); f += p;
 
