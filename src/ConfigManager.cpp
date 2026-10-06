@@ -9,10 +9,28 @@
 static const char *CONFIG_FILE = "/config.json";
 static const char *CONFIG_TMP = "/config.tmp";
 
-// Values set via REST/MQTT are written as a small blob instead of the whole JSON config.
+// Ranges of the additional heat meter records (see MBusSlave::sendRspUd).
+static constexpr double FLOW_MAX = 4294967.295;   // uint32 at 0.001 m3/h
+static constexpr double TEMP_MIN = -3276.8;       // int16 at 0.1 °C
+static constexpr double TEMP_MAX = 3276.7;
+
+// Values set via REST/MQTT are written to their own file instead of the whole JSON config.
 // Saved after VALUE_SAVE_QUIET_MS without changes, at the latest VALUE_SAVE_MAX_MS after the first change.
+// Format: magic, meter count, values per meter, then per meter: value, flow, flowTemp, returnTemp,
+// energy[0..4] as double. Older firmware kept value/heat in NVS ("values"/"heat"), migrated once.
+static const char *VALUES_FILE = "/values.bin";
+static const char *VALUES_TMP = "/values.tmp";
+static constexpr uint32_t VALUES_MAGIC = 0x3156424D; // "MBV1"
+static constexpr uint32_t VALUES_PER_METER = 4 + ENERGY_REGS;
 static constexpr uint32_t VALUE_SAVE_QUIET_MS = 10000;
 static constexpr uint32_t VALUE_SAVE_MAX_MS = 60000;
+
+// Replaces dst by tmp, so a power loss never leaves a truncated file behind.
+static bool replaceFile(const char *tmp, const char *dst) {
+  if (LittleFS.rename(tmp, dst)) return true;
+  LittleFS.remove(dst);
+  return LittleFS.rename(tmp, dst);
+}
 
 bool ConfigManager::begin() {
   if (!prefs_.begin("mbusvirt", false)) return false;
@@ -83,31 +101,84 @@ bool ConfigManager::save() {
       f.close();
     }
   }
-  // Write to a temp file first so a power loss never leaves a truncated config behind.
-  if (ok && !LittleFS.rename(CONFIG_TMP, CONFIG_FILE)) {
-    LittleFS.remove(CONFIG_FILE);
-    ok = LittleFS.rename(CONFIG_TMP, CONFIG_FILE);
-  }
+  if (ok) ok = replaceFile(CONFIG_TMP, CONFIG_FILE);
   return saveValues() && ok;
 }
 
 bool ConfigManager::saveValues() {
-  std::vector<double> values(MAX_METERS);
-  for (size_t i = 0; i < MAX_METERS; ++i) values[i] = cfg_.meters[i].value;
+  File f = LittleFS.open(VALUES_TMP, "w");
+  if (!f) return false;
+  const uint32_t header[3] = {VALUES_MAGIC, MAX_METERS, VALUES_PER_METER};
+  bool ok = f.write(reinterpret_cast<const uint8_t *>(header), sizeof(header)) == sizeof(header);
+  for (size_t i = 0; ok && i < MAX_METERS; ++i) {
+    const VirtualMeter &m = cfg_.meters[i];
+    double row[VALUES_PER_METER] = {m.value, m.flow, m.flowTemp, m.returnTemp};
+    for (size_t r = 0; r < ENERGY_REGS; ++r) row[4 + r] = m.energy[r];
+    ok = f.write(reinterpret_cast<const uint8_t *>(row), sizeof(row)) == sizeof(row);
+  }
+  f.close();
+  if (ok) ok = replaceFile(VALUES_TMP, VALUES_FILE);
+  // Not retried on failure: loop() would otherwise rewrite the flash on every pass.
   valuesDirty_ = false;
-  const size_t bytes = values.size() * sizeof(double);
-  return prefs_.putBytes("values", values.data(), bytes) == bytes;
+  return ok;
 }
 
+static bool validCount(double v) { return isfinite(v) && v >= 0; }
+static bool validFlow(double v) { return isfinite(v) && v >= 0 && v <= FLOW_MAX; }
+static bool validTemp(double v) { return isfinite(v) && v >= TEMP_MIN && v <= TEMP_MAX; }
+
 void ConfigManager::loadValues() {
+  File f = LittleFS.open(VALUES_FILE, "r");
+  if (!f) {
+    if (loadLegacyValues() && saveValues()) {
+      prefs_.remove("values");
+      prefs_.remove("heat");
+      Serial.println("Meter values migrated from NVS to LittleFS");
+    }
+    return;
+  }
+  uint32_t header[3];
+  if (f.read(reinterpret_cast<uint8_t *>(header), sizeof(header)) != sizeof(header) ||
+      header[0] != VALUES_MAGIC || header[2] != VALUES_PER_METER) {
+    f.close();
+    return;
+  }
+  for (size_t i = 0; i < header[1] && i < MAX_METERS; ++i) {
+    double row[VALUES_PER_METER];
+    if (f.read(reinterpret_cast<uint8_t *>(row), sizeof(row)) != sizeof(row)) break;
+    VirtualMeter &m = cfg_.meters[i];
+    if (validCount(row[0])) m.value = row[0];
+    if (validFlow(row[1])) m.flow = row[1];
+    if (validTemp(row[2])) m.flowTemp = row[2];
+    if (validTemp(row[3])) m.returnTemp = row[3];
+    for (size_t r = 0; r < ENERGY_REGS; ++r) {
+      if (validCount(row[4 + r])) m.energy[r] = row[4 + r];
+    }
+  }
+  f.close();
+}
+
+bool ConfigManager::loadLegacyValues() {
   // Older firmware stored fewer meters; take whatever is there.
   size_t len = prefs_.getBytesLength("values");
-  if (len == 0 || len % sizeof(double) != 0 || len > MAX_METERS * sizeof(double)) return;
+  if (len == 0 || len % sizeof(double) != 0 || len > MAX_METERS * sizeof(double)) return false;
   std::vector<double> values(len / sizeof(double));
-  if (prefs_.getBytes("values", values.data(), len) != len) return;
+  if (prefs_.getBytes("values", values.data(), len) != len) return false;
   for (size_t i = 0; i < values.size(); ++i) {
-    if (isfinite(values[i]) && values[i] >= 0) cfg_.meters[i].value = values[i];
+    if (validCount(values[i])) cfg_.meters[i].value = values[i];
   }
+
+  len = prefs_.getBytesLength("heat");
+  if (len == 0 || len % (3 * sizeof(float)) != 0 || len > MAX_METERS * 3 * sizeof(float)) return true;
+  std::vector<float> heat(len / sizeof(float));
+  if (prefs_.getBytes("heat", heat.data(), len) != len) return true;
+  for (size_t i = 0; i < heat.size() / 3; ++i) {
+    VirtualMeter &m = cfg_.meters[i];
+    if (validFlow(heat[i * 3])) m.flow = heat[i * 3];
+    if (validTemp(heat[i * 3 + 1])) m.flowTemp = heat[i * 3 + 1];
+    if (validTemp(heat[i * 3 + 2])) m.returnTemp = heat[i * 3 + 2];
+  }
+  return true;
 }
 
 void ConfigManager::loop() {
@@ -142,16 +213,107 @@ bool ConfigManager::setMeterValue(size_t index, double value, String &error) {
     error = "Unbekannter Zähler";
     return false;
   }
+  if (!checkValue(cfg_.meters[index], value, error)) return false;
+  MeterUpdate u;
+  u.hasValue = true;
+  u.value = value;
+  applyUpdate(index, u);
+  return true;
+}
+
+static bool readNumber(JsonObjectConst in, const char *key, bool &has, double &out, String &error) {
+  JsonVariantConst v = in[key];
+  if (v.isNull()) return true;
+  if (!v.is<double>()) {
+    error = "'" + String(key) + "' muss eine Zahl sein";
+    return false;
+  }
+  has = true;
+  out = v.as<double>();
+  return true;
+}
+
+bool ConfigManager::parseUpdate(const VirtualMeter &meter, JsonObjectConst in, MeterUpdate &out, String &error) {
+  out = MeterUpdate{};
+  if (in.isNull()) {
+    error = "JSON-Objekt erwartet";
+    return false;
+  }
+  if (!readNumber(in, "value", out.hasValue, out.value, error) ||
+      !readNumber(in, "flow", out.hasFlow, out.flow, error) ||
+      !readNumber(in, "flowTemp", out.hasFlowTemp, out.flowTemp, error) ||
+      !readNumber(in, "returnTemp", out.hasReturnTemp, out.returnTemp, error)) {
+    return false;
+  }
+  // "1.8.0" is an alias for value.
+  bool has180 = false;
+  double v180 = 0;
+  if (!readNumber(in, "1.8.0", has180, v180, error)) return false;
+  if (has180) {
+    if (out.hasValue && v180 != out.value) {
+      error = "'value' und '1.8.0' widersprechen sich";
+      return false;
+    }
+    out.hasValue = true;
+    out.value = v180;
+  }
+  bool anyEnergy = false;
+  for (size_t r = 0; r < ENERGY_REGS; ++r) {
+    if (!readNumber(in, ENERGY_REG_NAMES[r], out.hasEnergy[r], out.energy[r], error)) return false;
+    anyEnergy |= out.hasEnergy[r];
+  }
+  if (out.empty()) {
+    error = "'value', 'flow', 'flowTemp', 'returnTemp' oder OBIS-Register ('1.8.0' ... '2.8.2') erwartet";
+    return false;
+  }
+  if (out.hasValue && !checkValue(meter, out.value, error)) return false;
+  if (anyEnergy && !isBidirectionalMeter(meter)) {
+    error = "Register 1.8.1 ... 2.8.2 gibt es nur bei Zählern vom Typ Strom 2-Richtung";
+    return false;
+  }
+  for (size_t r = 0; r < ENERGY_REGS; ++r) {
+    if (out.hasEnergy[r] && !checkValue(meter, out.energy[r], error)) {
+      error = String(ENERGY_REG_NAMES[r]) + ": " + error;
+      return false;
+    }
+  }
+  if ((out.hasFlow || out.hasFlowTemp || out.hasReturnTemp) && !isHeatMeter(meter)) {
+    error = "'flow', 'flowTemp' und 'returnTemp' gibt es nur bei Wärmezählern (Medium 4)";
+    return false;
+  }
+  if (out.hasFlow && (!isfinite(out.flow) || out.flow < 0 || out.flow > FLOW_MAX)) {
+    error = "Durchfluss muss zwischen 0 und 4294967.295 m³/h liegen";
+    return false;
+  }
+  if ((out.hasFlowTemp && (!isfinite(out.flowTemp) || out.flowTemp < TEMP_MIN || out.flowTemp > TEMP_MAX)) ||
+      (out.hasReturnTemp && (!isfinite(out.returnTemp) || out.returnTemp < TEMP_MIN || out.returnTemp > TEMP_MAX))) {
+    error = "Temperatur muss zwischen -3276.8 und 3276.7 °C liegen";
+    return false;
+  }
+  return true;
+}
+
+void ConfigManager::applyUpdate(size_t index, const MeterUpdate &u) {
+  if (index >= cfg_.meterCount || index >= MAX_METERS) return;
   VirtualMeter &m = cfg_.meters[index];
-  if (!checkValue(m, value, error)) return false;
-  if (m.value != value) {
-    m.value = value;
+  bool changed = false;
+  auto set = [&changed](bool has, double v, double &target) {
+    if (has && target != v) {
+      target = v;
+      changed = true;
+    }
+  };
+  set(u.hasValue, u.value, m.value);
+  set(u.hasFlow, u.flow, m.flow);
+  set(u.hasFlowTemp, u.flowTemp, m.flowTemp);
+  set(u.hasReturnTemp, u.returnTemp, m.returnTemp);
+  for (size_t r = 0; r < ENERGY_REGS; ++r) set(u.hasEnergy[r], u.energy[r], m.energy[r]);
+  if (changed) {
     uint32_t now = millis();
     if (!valuesDirty_) firstDirtyMs_ = now;
     lastChangeMs_ = now;
     valuesDirty_ = true;
   }
-  return true;
 }
 
 void ConfigManager::meterToJson(size_t index, JsonObject o) const {
@@ -166,6 +328,16 @@ void ConfigManager::meterToJson(size_t index, JsonObject o) const {
   o["unit"] = m.unit;
   o["resolution"] = pow(10.0, m.resolutionExp);
   o["maxValue"] = maxValue(m);
+  if (isHeatMeter(m)) {
+    o["flow"] = m.flow;
+    o["flowTemp"] = m.flowTemp;
+    o["returnTemp"] = m.returnTemp;
+  }
+  if (isBidirectionalMeter(m)) {
+    o["bidirectional"] = true;
+    o["1.8.0"] = m.value;
+    for (size_t r = 0; r < ENERGY_REGS; ++r) o[ENERGY_REG_NAMES[r]] = m.energy[r];
+  }
 }
 
 void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
@@ -197,6 +369,15 @@ void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
     m["value"] = cfg_.meters[i].value;
     m["unit"] = cfg_.meters[i].unit;
     m["resolutionExp"] = cfg_.meters[i].resolutionExp;
+    if (isHeatMeter(cfg_.meters[i])) {
+      m["flow"] = cfg_.meters[i].flow;
+      m["flowTemp"] = cfg_.meters[i].flowTemp;
+      m["returnTemp"] = cfg_.meters[i].returnTemp;
+    }
+    if (isBidirectionalMeter(cfg_.meters[i])) {
+      m["bidirectional"] = true;
+      for (size_t r = 0; r < ENERGY_REGS; ++r) m[ENERGY_REG_NAMES[r]] = cfg_.meters[i].energy[r];
+    }
   }
 }
 
@@ -275,12 +456,30 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
     cfg_.meters[i].unit = m.isNull() ? "m3" : m["unit"].as<String>();
     if (cfg_.meters[i].unit != "m3" && cfg_.meters[i].unit != "kWh") cfg_.meters[i].unit = "m3";
 
+    // Bidirectional electricity meter: always medium electricity and kWh.
+    cfg_.meters[i].bidirectional = m.isNull() ? false : (m["bidirectional"] | false);
+    if (cfg_.meters[i].bidirectional) {
+      cfg_.meters[i].medium = 0x02;
+      cfg_.meters[i].unit = "kWh";
+    }
+    for (size_t r = 0; r < ENERGY_REGS; ++r) {
+      double e = m.isNull() ? 0.0 : (m[ENERGY_REG_NAMES[r]] | 0.0);
+      cfg_.meters[i].energy[r] = validCount(e) ? e : 0.0;
+    }
+
     // Older configs have no resolution: keep previous behaviour (m3 = 0.001, kWh = 1).
     int defExp = cfg_.meters[i].unit == "kWh" ? 0 : -3;
     int res = m.isNull() ? defExp : (m["resolutionExp"] | defExp);
     if (res < -3) res = -3;
     if (res > 1) res = 1;
     cfg_.meters[i].resolutionExp = static_cast<int8_t>(res);
+
+    double flow = m.isNull() ? 0.0 : (m["flow"] | 0.0);
+    double flowTemp = m.isNull() ? 0.0 : (m["flowTemp"] | 0.0);
+    double returnTemp = m.isNull() ? 0.0 : (m["returnTemp"] | 0.0);
+    cfg_.meters[i].flow = isfinite(flow) ? constrain(flow, 0.0, FLOW_MAX) : 0.0;
+    cfg_.meters[i].flowTemp = isfinite(flowTemp) ? constrain(flowTemp, TEMP_MIN, TEMP_MAX) : 0.0;
+    cfg_.meters[i].returnTemp = isfinite(returnTemp) ? constrain(returnTemp, TEMP_MIN, TEMP_MAX) : 0.0;
   }
 
   // Reject duplicate active primary addresses.

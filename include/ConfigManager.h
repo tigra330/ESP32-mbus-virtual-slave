@@ -4,6 +4,18 @@
 #include <Preferences.h>
 #include "AppConfig.h"
 
+// Runtime values to set on one meter (REST/MQTT). Only fields with has* = true are applied.
+struct MeterUpdate {
+  bool hasValue = false, hasFlow = false, hasFlowTemp = false, hasReturnTemp = false;
+  double value = 0, flow = 0, flowTemp = 0, returnTemp = 0;
+  bool hasEnergy[ENERGY_REGS] = {};
+  double energy[ENERGY_REGS] = {};
+  bool empty() const {
+    for (bool b : hasEnergy) if (b) return false;
+    return !hasValue && !hasFlow && !hasFlowTemp && !hasReturnTemp;
+  }
+};
+
 class ConfigManager {
 public:
   bool begin();
@@ -18,10 +30,15 @@ public:
 
   // Runtime meter values (REST/MQTT). index is 0-based.
   bool setMeterValue(size_t index, double value, String &error);
+  // Reads value/flow/flowTemp/returnTemp and the OBIS registers ("1.8.0" ... "2.8.2") from a
+  // JSON object and validates them for this meter.
+  static bool parseUpdate(const VirtualMeter &meter, JsonObjectConst in, MeterUpdate &out, String &error);
+  // Applies an update validated with parseUpdate().
+  void applyUpdate(size_t index, const MeterUpdate &update);
   void meterToJson(size_t index, JsonObject out) const;
   static double maxValue(const VirtualMeter &meter);
   static bool checkValue(const VirtualMeter &meter, double value, String &error);
-  // Persists values changed via setMeterValue() delayed, to spare the flash.
+  // Persists values changed via setMeterValue()/applyUpdate() delayed, to spare the flash.
   void loop();
 
 private:
@@ -33,5 +50,6 @@ private:
 
   bool saveValues();
   void loadValues();
+  bool loadLegacyValues();
   bool fromDoc(JsonDocument &doc, String &error);
 };

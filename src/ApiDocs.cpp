@@ -35,9 +35,22 @@ Gespeichert im Flash werden sie nach 10 s ohne weitere Änderung, spätestens na
 <tr><td><code>value</code></td><td>number</td><td>aktueller Zählerstand</td></tr>
 <tr><td><code>unit</code></td><td>string</td><td><code>m3</code> oder <code>kWh</code></td></tr>
 <tr><td><code>resolution</code></td><td>number</td><td>Auflösung (0.001 … 10)</td></tr>
-<tr><td><code>maxValue</code></td><td>number</td><td>größter zulässiger Wert bei dieser Auflösung</td></tr></table>
+<tr><td><code>maxValue</code></td><td>number</td><td>größter zulässiger Wert bei dieser Auflösung</td></tr>
+<tr><td><code>flow</code></td><td>number</td><td>nur Wärmezähler: Durchfluss in m³/h (0 … 4294967.295, Auflösung 0.001)</td></tr>
+<tr><td><code>flowTemp</code></td><td>number</td><td>nur Wärmezähler: Vorlauftemperatur in °C (-3276.8 … 3276.7, Auflösung 0.1)</td></tr>
+<tr><td><code>returnTemp</code></td><td>number</td><td>nur Wärmezähler: Rücklauftemperatur in °C (-3276.8 … 3276.7, Auflösung 0.1)</td></tr>
+<tr><td><code>bidirectional</code></td><td>bool</td><td>nur bei Typ Strom 2-Richtung: <code>true</code></td></tr>
+<tr><td><code>1.8.0</code> … <code>2.8.2</code></td><td>number</td><td>nur Strom 2-Richtung: OBIS-Register in kWh. <code>1.8.0</code> = <code>value</code> (Bezug gesamt), <code>1.8.1</code>/<code>1.8.2</code> Bezug Tarif 1/2, <code>2.8.0</code> Einspeisung gesamt, <code>2.8.1</code>/<code>2.8.2</code> Einspeisung Tarif 1/2. Bereich wie <code>value</code>.</td></tr></table>
 <pre>{"index":1,"enabled":true,"name":"Meter 1","primaryAddress":1,"secondaryAddress":10000001,
- "medium":7,"value":123.456,"unit":"m3","resolution":0.001,"maxValue":4294967.295}</pre></div>
+ "medium":7,"value":123.456,"unit":"m3","resolution":0.001,"maxValue":4294967.295}</pre>
+<div class="small">Wärmezähler (Medium 4):</div>
+<pre>{"index":2,"enabled":true,"name":"Wärme 1","primaryAddress":2,"secondaryAddress":10000002,
+ "medium":4,"value":1234,"unit":"kWh","resolution":1,"maxValue":4294967295,
+ "flow":1.25,"flowTemp":70.5,"returnTemp":50.2}</pre>
+<div class="small">Strom 2-Richtung:</div>
+<pre>{"index":3,"enabled":true,"name":"PV","primaryAddress":3,"secondaryAddress":10000003,
+ "medium":2,"value":1000,"unit":"kWh","resolution":1,"maxValue":4294967295,"bidirectional":true,
+ "1.8.0":1000,"1.8.1":600,"1.8.2":400,"2.8.0":250,"2.8.1":150,"2.8.2":100}</pre></div>
 
 <div class="card"><h2>REST-API</h2><div class="small">Alle Antworten sind JSON. <code>POST</code> funktioniert überall wie <code>PUT</code>.
 Fehler: <code>400</code> (ungültige Anfrage/Wert) bzw. <code>404</code> (unbekannter Zähler) mit <code>{"error":"…"}</code>.
@@ -51,8 +64,10 @@ Mit den Knöpfen kannst du die Aufrufe direkt gegen dieses Gerät ausprobieren.<
 <pre>curl http://<span class="host"></span>/api/meters/1</pre>
 <div class="row">n <input id="n2" type="number" min="1" value="1" style="width:80px"><button onclick="call('GET','/api/meters/'+v('n2'),null,'r2')">Ausprobieren</button></div><div id="r2" class="res"></div></div>
 
-<div class="ep"><h3><span class="m put">PUT</span><code>/api/meters/&lt;n&gt;</code></h3><div class="small">Setzt den Zählerstand eines Zählers. Antwort: der geänderte Zähler.</div>
-<pre>curl -X PUT http://<span class="host"></span>/api/meters/1 -d '{"value":123.456}'</pre>
+<div class="ep"><h3><span class="m put">PUT</span><code>/api/meters/&lt;n&gt;</code></h3><div class="small">Setzt den Zählerstand eines Zählers. Bei Wärmezählern zusätzlich <code>flow</code>, <code>flowTemp</code> und <code>returnTemp</code>, bei Strom 2-Richtung die Register <code>1.8.0</code> … <code>2.8.2</code>. Alle Felder sind optional, mindestens eines muss angegeben sein. Antwort: der geänderte Zähler.</div>
+<pre>curl -X PUT http://<span class="host"></span>/api/meters/1 -d '{"value":123.456}'
+curl -X PUT http://<span class="host"></span>/api/meters/2 -d '{"value":1234,"flow":1.25,"flowTemp":70.5,"returnTemp":50.2}'
+curl -X PUT http://<span class="host"></span>/api/meters/3 -d '{"1.8.0":1000,"1.8.1":600,"1.8.2":400,"2.8.0":250,"2.8.1":150,"2.8.2":100}'</pre>
 <div class="row">n <input id="n3" type="number" min="1" value="1" style="width:80px"></div>
 <textarea id="b3">{"value":123.456}</textarea>
 <div class="row"><button onclick="call('PUT','/api/meters/'+v('n3'),v('b3'),'r3')">Ausprobieren</button></div><div id="r3" class="res"></div></div>
@@ -70,7 +85,7 @@ Body: Array oder <code>{"meters":[…]}</code>. Zuerst werden alle Einträge gep
 <div class="card"><h2>MQTT</h2><div class="small">Broker und Basis-Topic werden in der <a href="/">Weboberfläche</a> eingestellt.
 Aktuelles Basis-Topic: <code class="bt"></code> · Status: <span id="mq">…</span></div>
 <table><tr><th>Topic</th><th>Richtung</th><th>Inhalt</th></tr>
-<tr><td><code><span class="bt"></span>/meter/&lt;n&gt;/set</code></td><td>an das Gerät</td><td>Zählerstand setzen: <code>123.456</code> oder <code>{"value":123.456}</code>, Dezimalkomma wird akzeptiert</td></tr>
+<tr><td><code><span class="bt"></span>/meter/&lt;n&gt;/set</code></td><td>an das Gerät</td><td>Zählerstand setzen: <code>123.456</code> oder <code>{"value":123.456}</code>, Dezimalkomma wird akzeptiert. Wärmezähler zusätzlich per JSON: <code>{"flow":1.25,"flowTemp":70.5,"returnTemp":50.2}</code>, Strom 2-Richtung: <code>{"1.8.0":1000,"2.8.0":250}</code> (beliebig kombinierbar)</td></tr>
 <tr><td><code><span class="bt"></span>/meter/&lt;n&gt;/state</code></td><td>vom Gerät</td><td>Zähler-Objekt als JSON, retained. Wird nach jeder Änderung (MQTT oder REST) und beim Verbinden gesendet.</td></tr>
 <tr><td><code><span class="bt"></span>/error</code></td><td>vom Gerät</td><td>abgelehnte Werte: <code>{"index":1,"payload":"abc","error":"…"}</code></td></tr>
 <tr><td><code><span class="bt"></span>/status</code></td><td>vom Gerät</td><td><code>online</code> / <code>offline</code>, retained, Last Will</td></tr></table>
@@ -104,7 +119,7 @@ const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "/api/meters/{n}":{
 "parameters":[{"name":"n","in":"path","required":true,"description":"Zählernummer (1 ...)","schema":{"type":"integer","minimum":1,"maximum":250}}],
 "get":{"summary":"Ein Zähler","responses":{"200":{"description":"Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"404":{"$ref":"#/components/responses/Error"}}},
-"put":{"summary":"Zählerstand setzen","requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"value":{"type":"number","minimum":0}},"required":["value"]},"example":{"value":123.456}}}},
+"put":{"summary":"Zählerstand setzen","description":"Mindestens ein Feld angeben. flow/flowTemp/returnTemp nur bei Wärmezählern, 1.8.1 ... 2.8.2 nur bei Strom 2-Richtung.","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Update"},"example":{"value":123.456}}}},
 "responses":{"200":{"description":"Geänderter Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"400":{"$ref":"#/components/responses/Error"},"404":{"$ref":"#/components/responses/Error"}}}},
 "/api/status":{
 "get":{"summary":"Gerätestatus","responses":{"200":{"description":"Status","content":{"application/json":{"schema":{"type":"object","properties":{"ip":{"type":"string"},"wifiMode":{"type":"string"},"rxFrames":{"type":"integer"},"txFrames":{"type":"integer"},"lastEvent":{"type":"string"},"lastRx":{"type":"string"},"lastTx":{"type":"string"},"mqtt":{"type":"string"}}}}}}}}}
@@ -121,8 +136,19 @@ const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "value":{"type":"number"},
 "unit":{"type":"string","enum":["m3","kWh"]},
 "resolution":{"type":"number","description":"0.001 ... 10"},
-"maxValue":{"type":"number","description":"Größter zulässiger Wert bei dieser Auflösung"}}},
-"BulkItem":{"type":"object","description":"index oder primaryAddress angeben","properties":{"index":{"type":"integer","minimum":1},"primaryAddress":{"type":"integer","minimum":1,"maximum":250},"value":{"type":"number","minimum":0}},"required":["value"]},
+"maxValue":{"type":"number","description":"Größter zulässiger Wert bei dieser Auflösung"},
+"flow":{"type":"number","description":"Nur Wärmezähler: Durchfluss in m³/h"},
+"flowTemp":{"type":"number","description":"Nur Wärmezähler: Vorlauftemperatur in °C"},
+"returnTemp":{"type":"number","description":"Nur Wärmezähler: Rücklauftemperatur in °C"},
+"bidirectional":{"type":"boolean","description":"Nur Strom 2-Richtung: true"},
+"1.8.0":{"type":"number","description":"Nur Strom 2-Richtung: Bezug gesamt (= value)"},
+"1.8.1":{"type":"number","description":"Nur Strom 2-Richtung: Bezug Tarif 1"},
+"1.8.2":{"type":"number","description":"Nur Strom 2-Richtung: Bezug Tarif 2"},
+"2.8.0":{"type":"number","description":"Nur Strom 2-Richtung: Einspeisung gesamt"},
+"2.8.1":{"type":"number","description":"Nur Strom 2-Richtung: Einspeisung Tarif 1"},
+"2.8.2":{"type":"number","description":"Nur Strom 2-Richtung: Einspeisung Tarif 2"}}},
+"Update":{"type":"object","description":"Mindestens ein Feld. flow/flowTemp/returnTemp nur bei Wärmezählern, 1.8.1 ... 2.8.2 nur bei Strom 2-Richtung; 1.8.0 ist gleichbedeutend mit value.","properties":{"value":{"type":"number","minimum":0},"flow":{"type":"number","minimum":0,"maximum":4294967.295},"flowTemp":{"type":"number","minimum":-3276.8,"maximum":3276.7},"returnTemp":{"type":"number","minimum":-3276.8,"maximum":3276.7},"1.8.0":{"type":"number","minimum":0},"1.8.1":{"type":"number","minimum":0},"1.8.2":{"type":"number","minimum":0},"2.8.0":{"type":"number","minimum":0},"2.8.1":{"type":"number","minimum":0},"2.8.2":{"type":"number","minimum":0}}},
+"BulkItem":{"type":"object","description":"index oder primaryAddress angeben, dazu mindestens ein Wert-Feld","properties":{"index":{"type":"integer","minimum":1},"primaryAddress":{"type":"integer","minimum":1,"maximum":250},"value":{"type":"number","minimum":0},"flow":{"type":"number","minimum":0},"flowTemp":{"type":"number"},"returnTemp":{"type":"number"},"1.8.0":{"type":"number","minimum":0},"1.8.1":{"type":"number","minimum":0},"1.8.2":{"type":"number","minimum":0},"2.8.0":{"type":"number","minimum":0},"2.8.1":{"type":"number","minimum":0},"2.8.2":{"type":"number","minimum":0}}},
 "Error":{"type":"object","properties":{"error":{"type":"string"}}}},
 "responses":{"Error":{"description":"Fehler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Error"}}}}}}
 })JSON";

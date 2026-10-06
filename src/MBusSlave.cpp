@@ -109,7 +109,7 @@ void MBusSlave::encodeBcd8(uint32_t number, uint8_t out[4]) {
 }
 
 void MBusSlave::sendRspUd(VirtualMeter &meter) {
-  uint8_t app[64]{};
+  uint8_t app[96]{};
   size_t p = 0;
 
   // CI 0x72: variable data structure, mode 1 (LSB first)
@@ -137,17 +137,64 @@ void MBusSlave::sendRspUd(VirtualMeter &meter) {
   if (resExp < -3) resExp = -3;
   if (resExp > 1) resExp = 1;
   uint8_t vifBase = meter.unit == "kWh" ? 0x00 : 0x10;
-  app[p++] = static_cast<uint8_t>(vifBase + resExp + 6);
+  const uint8_t vif = static_cast<uint8_t>(vifBase + resExp + 6);
+  app[p++] = vif;
 
-  double v = resExp <= 0 ? meter.value * pow(10.0, -resExp) : meter.value / pow(10.0, resExp);
-  if (v < 0) v = 0;
-  if (v > 4294967295.0) v = 4294967295.0;
-  uint32_t raw = static_cast<uint32_t>(llround(v));
+  auto putCounter = [&](double value) {
+    double v = resExp <= 0 ? value * pow(10.0, -resExp) : value / pow(10.0, resExp);
+    if (v < 0) v = 0;
+    if (v > 4294967295.0) v = 4294967295.0;
+    uint32_t raw = static_cast<uint32_t>(llround(v));
+    for (int i = 0; i < 4; ++i) app[p++] = static_cast<uint8_t>((raw >> (8 * i)) & 0xFF);
+  };
+  putCounter(meter.value);
 
-  app[p++] = static_cast<uint8_t>(raw & 0xFF);
-  app[p++] = static_cast<uint8_t>((raw >> 8) & 0xFF);
-  app[p++] = static_cast<uint8_t>((raw >> 16) & 0xFF);
-  app[p++] = static_cast<uint8_t>((raw >> 24) & 0xFF);
+  if (isBidirectionalMeter(meter)) {
+    // 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2 with the same VIF as 1.8.0.
+    // Tariff in DIFE bits 4-5 (0x10 = tariff 1, 0x20 = tariff 2).
+    // Export (2.8.x): VIFE 0x3C = accumulation of abs value only if negative contributions.
+    static const struct { uint8_t tariff; bool exported; } regs[ENERGY_REGS] = {
+        {1, false}, {2, false}, {0, true}, {1, true}, {2, true}};
+    for (size_t r = 0; r < ENERGY_REGS; ++r) {
+      if (regs[r].tariff) {
+        app[p++] = 0x84;                                        // DIF: 32-bit integer + DIFE follows
+        app[p++] = static_cast<uint8_t>(regs[r].tariff << 4);   // DIFE: tariff
+      } else {
+        app[p++] = 0x04;
+      }
+      if (regs[r].exported) {
+        app[p++] = static_cast<uint8_t>(vif | 0x80);            // VIF + VIFE follows
+        app[p++] = 0x3C;
+      } else {
+        app[p++] = vif;
+      }
+      putCounter(meter.energy[r]);
+    }
+  }
+
+  if (isHeatMeter(meter)) {
+    // Volume flow: DIF 0x04 (32-bit), VIF 0x3B = 10^-3 m3/h.
+    double f = llround(meter.flow * 1000.0);
+    if (f < 0) f = 0;
+    if (f > 4294967295.0) f = 4294967295.0;
+    uint32_t flowRaw = static_cast<uint32_t>(f);
+    app[p++] = 0x04;
+    app[p++] = 0x3B;
+    for (int i = 0; i < 4; ++i) app[p++] = static_cast<uint8_t>((flowRaw >> (8 * i)) & 0xFF);
+
+    // Flow / return temperature: DIF 0x02 (16-bit signed), VIF 0x5A / 0x5E = 10^-1 °C.
+    const struct { uint8_t vif; double celsius; } temps[] = {{0x5A, meter.flowTemp}, {0x5E, meter.returnTemp}};
+    for (const auto &t : temps) {
+      long r = lround(t.celsius * 10.0);
+      if (r < -32768) r = -32768;
+      if (r > 32767) r = 32767;
+      uint16_t tempRaw = static_cast<uint16_t>(static_cast<int16_t>(r));
+      app[p++] = 0x02;
+      app[p++] = t.vif;
+      app[p++] = static_cast<uint8_t>(tempRaw & 0xFF);
+      app[p++] = static_cast<uint8_t>(tempRaw >> 8);
+    }
+  }
 
   uint8_t frame[96]{};
   size_t f = 0;

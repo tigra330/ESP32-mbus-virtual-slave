@@ -11,7 +11,9 @@
 //
 // Topics (<base> = configured base topic, <n> = meter index 1..250):
 //   <base>/status          "online" / "offline" (retained, last will)
-//   <base>/meter/<n>/set   subscribe: "123.456" or {"value":123.456}
+//   <base>/meter/<n>/set   subscribe: "123.456" or {"value":123.456}; heat meters also
+//                          {"flow":1.25,"flowTemp":70.5,"returnTemp":50.2} (any combination),
+//                          bidirectional electricity meters {"1.8.0":1,"1.8.1":2,...,"2.8.2":6}
 //   <base>/meter/<n>/state publish (retained): meter as JSON
 //   <base>/error           publish: rejected set messages
 class MqttBridge {
@@ -29,7 +31,7 @@ public:
 private:
   struct SetMessage {
     uint8_t index; // 0-based
-    char payload[48];
+    char payload[256];
   };
 
   ConfigManager *config_ = nullptr;

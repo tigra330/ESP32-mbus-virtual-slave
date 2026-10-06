@@ -165,23 +165,29 @@ void MqttBridge::handleSet(const SetMessage &msg) {
   String payload(msg.payload);
   payload.trim();
 
-  double value = NAN;
-  if (payload.startsWith("{")) {
+  String error;
+  if (msg.index >= config_->config().meterCount) {
+    error = "Unbekannter Zähler";
+  } else if (payload.startsWith("{")) {
     JsonDocument doc;
-    if (!deserializeJson(doc, payload) && doc["value"].is<double>()) value = doc["value"].as<double>();
+    MeterUpdate u;
+    if (deserializeJson(doc, payload)) {
+      error = "Ungültiges JSON";
+    } else if (ConfigManager::parseUpdate(config_->config().meters[msg.index], doc.as<JsonObjectConst>(), u, error)) {
+      config_->applyUpdate(msg.index, u);
+      publishMeter(msg.index);
+      return;
+    }
   } else {
     payload.replace(',', '.');
     char *end = nullptr;
-    value = strtod(payload.c_str(), &end);
-    if (end == payload.c_str() || *end != '\0') value = NAN;
-  }
-
-  String error;
-  if (isnan(value)) {
-    error = "Ungültiger Wert '" + String(msg.payload) + "'";
-  } else if (config_->setMeterValue(msg.index, value, error)) {
-    publishMeter(msg.index);
-    return;
+    double value = strtod(payload.c_str(), &end);
+    if (end == payload.c_str() || *end != '\0') {
+      error = "Ungültiger Wert '" + String(msg.payload) + "'";
+    } else if (config_->setMeterValue(msg.index, value, error)) {
+      publishMeter(msg.index);
+      return;
+    }
   }
 
   JsonDocument doc;

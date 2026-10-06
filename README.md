@@ -14,6 +14,8 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - manueller Zählerwert
 - Einheit m³ oder kWh
 - einstellbare Auflösung pro Zähler (0,001 … 10)
+- Wärmezähler zusätzlich mit Durchfluss, Vorlauf- und Rücklauftemperatur
+- Zählertyp Strom 2-Richtung mit den OBIS-Registern 1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
 - Weboberfläche zur Konfiguration
@@ -162,6 +164,50 @@ Standard ist 0,001 für m³ und 1 für kWh. Bestehende Konfigurationen behalten 
 
 > Nach EN 13757-3 ist DIF `0x04` ein vorzeichenbehafteter Integer. Manche Master zeigen RAW-Werte über 2.147.483.647 deshalb negativ an.
 
+### Wärmezähler
+
+Ist als Medium **Wärme** (`0x04`) eingestellt (oder `0x0C`, Wärme Vorlauf), sendet der Zähler nach dem Zählerstand drei weitere Datensätze:
+
+| Wert | DIF | VIF | Auflösung | Bereich |
+|---|---|---|---|---|
+| Durchfluss | `0x04` (32 Bit) | `0x3B` | 0,001 m³/h (1 l/h) | 0 … 4.294.967,295 m³/h |
+| Vorlauftemperatur | `0x02` (16 Bit, mit Vorzeichen) | `0x5A` | 0,1 °C | −3276,8 … 3276,7 °C |
+| Rücklauftemperatur | `0x02` (16 Bit, mit Vorzeichen) | `0x5E` | 0,1 °C | −3276,8 … 3276,7 °C |
+
+In der Weboberfläche erscheinen die drei Felder, sobald beim Zähler das Medium Wärme gewählt ist. Per REST und MQTT heißen sie `flow`, `flowTemp` und `returnTemp`. Sie werden wie der Zählerstand verzögert im Flash gespeichert.
+
+Für den Zählerstand eines Wärmezählers ist als Einheit meist kWh sinnvoll.
+
+### Strom 2-Richtung
+
+Wird als Medium **Strom 2-Richtung** gewählt, sendet der Zähler Medium `0x02` (Strom) und sechs Energie-Register. Die Einheit ist fest kWh. Alle Register haben die beim Zähler eingestellte Auflösung (gleiche VIF wie der Zählerstand, z. B. `0x06` bei 1 kWh).
+
+| OBIS | Bedeutung | DIF | DIFE | VIF | VIFE |
+|---|---|---|---|---|---|
+| 1.8.0 | Bezug gesamt (= Zählerstand `value`) | `0x04` | – | VIF | – |
+| 1.8.1 | Bezug Tarif 1 | `0x84` | `0x10` | VIF | – |
+| 1.8.2 | Bezug Tarif 2 | `0x84` | `0x20` | VIF | – |
+| 2.8.0 | Einspeisung gesamt | `0x04` | – | VIF \| `0x80` | `0x3C` |
+| 2.8.1 | Einspeisung Tarif 1 | `0x84` | `0x10` | VIF \| `0x80` | `0x3C` |
+| 2.8.2 | Einspeisung Tarif 2 | `0x84` | `0x20` | VIF \| `0x80` | `0x3C` |
+
+Der Tarif steht in den Bits 4–5 der DIFE. Die Einspeiserichtung wird über VIFE `0x3C` gekennzeichnet („Accumulation of abs value only if negative contributions“, EN 13757-3).
+
+Alle sechs Register werden unabhängig gesetzt. 1.8.0 wird nicht aus 1.8.1 + 1.8.2 berechnet.
+
+Per REST und MQTT heißen die Felder wie die OBIS-Kennzahl, z. B. `{"1.8.0":1000,"2.8.0":250}`. `1.8.0` ist gleichbedeutend mit `value`.
+
+Beispiel (Auflösung 1 kWh): 1.8.0 = 1000, 1.8.1 = 600, 1.8.2 = 400, 2.8.0 = 250, 2.8.1 = 150, 2.8.2 = 100:
+
+```text
+04 06 E8 03 00 00        1.8.0
+84 10 06 58 02 00 00     1.8.1
+84 20 06 90 01 00 00     1.8.2
+04 86 3C FA 00 00 00     2.8.0
+84 10 86 3C 96 00 00 00  2.8.1
+84 20 86 3C 64 00 00 00  2.8.2
+```
+
 ## MQTT
 
 MQTT wird in der Weboberfläche in der Karte **MQTT** eingerichtet:
@@ -182,7 +228,7 @@ Nach dem Speichern verbindet sich der ESP32 sofort neu, ein Neustart ist nicht n
 
 | Topic | Richtung | Inhalt |
 |---|---|---|
-| `<base>/meter/<n>/set` | an den ESP32 | `123.456` oder `{"value":123.456}` (Dezimalkomma wird akzeptiert) |
+| `<base>/meter/<n>/set` | an den ESP32 | `123.456` oder `{"value":123.456}` (Dezimalkomma wird akzeptiert); Wärmezähler zusätzlich `{"flow":1.25,"flowTemp":70.5,"returnTemp":50.2}`, Strom 2-Richtung `{"1.8.0":1000,"1.8.1":600,…,"2.8.2":100}`, beliebig kombinierbar |
 | `<base>/meter/<n>/state` | vom ESP32 | Zähler als JSON, retained |
 | `<base>/error` | vom ESP32 | abgelehnte Werte mit Fehlermeldung |
 | `<base>/status` | vom ESP32 | `online` / `offline` (retained, Last Will) |
@@ -201,6 +247,8 @@ Beispiel für eine `state`-Nachricht:
  "medium":7,"value":123.456,"unit":"m3","resolution":0.001,"maxValue":4294967.295}
 ```
 
+Bei Wärmezählern enthält sie zusätzlich `"flow"`, `"flowTemp"` und `"returnTemp"`, bei Strom 2-Richtung `"bidirectional":true` und die Register `"1.8.0"` … `"2.8.2"`.
+
 Der MQTT-Client (esp-mqtt aus dem ESP-IDF) läuft in einer eigenen Task. Ist der Broker nicht erreichbar, beantwortet der ESP32 M-Bus-Abfragen trotzdem ohne Verzögerung.
 
 `state`-Nachrichten werden gedrosselt gesendet: Der ESP32 übergibt neue Nachrichten erst, wenn die Outbox des MQTT-Clients unter 8 KB liegt. Nach dem Verbinden oder bei Änderungen an vielen Zählern verteilen sich die Nachrichten daher auf einen kurzen Zeitraum, statt den RAM auf einmal zu belegen.
@@ -217,8 +265,8 @@ Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`
 |---|---|---|---|
 | GET | `/api/meters` | – | alle Zähler |
 | GET | `/api/meters/<n>` | – | ein Zähler |
-| GET | `/api/values` | – | nur die Zählerstände als Array `[v1, v2, …]` (kompakt, für die Weboberfläche) |
-| PUT | `/api/meters/<n>` | `{"value":123.456}` | Zählerstand setzen |
+| GET | `/api/values` | – | nur die Werte, kompakt für die Weboberfläche: pro Zähler eine Zahl, bei Wärmezählern `[value, flow, flowTemp, returnTemp]`, bei Strom 2-Richtung `[1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2]` |
+| PUT | `/api/meters/<n>` | `{"value":123.456}`, bei Wärmezählern zusätzlich `flow`, `flowTemp`, `returnTemp`, bei Strom 2-Richtung `1.8.0` … `2.8.2` | Werte setzen (mindestens ein Feld) |
 | PUT | `/api/meters` | `[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]` oder `{"meters":[...]}` | mehrere Zähler setzen |
 
 Beim Setzen mehrerer Zähler kann jeder Eintrag über `index` (Zählernummer) oder `primaryAddress` angesprochen werden. Zuerst werden alle Einträge geprüft. Ist einer ungültig, wird nichts übernommen.
@@ -232,6 +280,8 @@ curl http://<ip>/api/meters
 curl http://<ip>/api/meters/1
 curl -X PUT http://<ip>/api/meters/1 -d '{"value":42949671}'
 curl -X PUT http://<ip>/api/meters -d '[{"index":1,"value":10},{"primaryAddress":5,"value":20.5}]'
+curl -X PUT http://<ip>/api/meters/2 -d '{"flow":1.25,"flowTemp":70.5,"returnTemp":50.2}'
+curl -X PUT http://<ip>/api/meters/3 -d '{"1.8.0":1000,"1.8.1":600,"1.8.2":400,"2.8.0":250,"2.8.1":150,"2.8.2":100}'
 ```
 
 Jede Änderung per REST wird zusätzlich als MQTT-`state` veröffentlicht.
@@ -246,7 +296,9 @@ Firmware-Versionen vor der LittleFS-Umstellung haben die Konfiguration im NVS ge
 
 Große Konfigurationen werden in kleinen Stücken übertragen, damit kein großer zusammenhängender Speicherblock im RAM nötig ist. Beim Speichern schreibt der ESP32 den Request-Body direkt in eine Datei, beim Abrufen sendet er das JSON stückweise.
 
-**Zählerstände**, die per MQTT oder REST gesetzt werden, sind sofort per M-Bus abrufbar. Im Flash gespeichert werden sie verzögert: nach 10 s ohne weitere Änderung, spätestens 60 s nach der ersten Änderung. Die Werte liegen in einem eigenen kleinen NVS-Block (250 × 8 Bytes), getrennt von der Konfiguration. Das schont den Flash auch bei häufigen Updates.
+**Zählerstände** und die übrigen Messwerte (Wärmezähler, Register von Strom 2-Richtung), die per MQTT oder REST gesetzt werden, sind sofort per M-Bus abrufbar. Im Flash gespeichert werden sie verzögert: nach 10 s ohne weitere Änderung, spätestens 60 s nach der ersten Änderung. Sie liegen in einer eigenen Datei `/values.bin` auf LittleFS (250 Zähler × 9 Werte × 8 Bytes ≈ 18 KB), getrennt von der Konfiguration. Das schont den Flash auch bei häufigen Updates.
+
+Ältere Firmware hat die Werte im NVS gespeichert. Sie werden beim ersten Start automatisch übernommen (serielle Ausgabe: `Meter values migrated from NVS to LittleFS`).
 
 Die Weboberfläche lädt die Zählerstände automatisch neu, sodass Änderungen per MQTT oder REST direkt sichtbar sind. Ein Feld, das gerade bearbeitet wird, wird dabei nicht überschrieben und bleibt gelb markiert, bis gespeichert wird. Das Intervall wird oben auf der Seite unter der Überschrift eingestellt (Aus, 1 … 60 s, Standard 2 s) und im Browser gespeichert.
 

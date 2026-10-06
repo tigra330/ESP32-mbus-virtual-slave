@@ -125,12 +125,29 @@ void setupRestApi() {
     server.send_P(200, "application/json", OPENAPI_JSON);
   });
 
-  // GET /api/values -> [v1, v2, ...] (compact, used by the web UI's auto refresh)
+  // GET /api/values -> [v1, [v2, flow, flowTemp, returnTemp], [v3, 1.8.1, ..., 2.8.2], ...]
+  // (compact, used by the web UI's auto refresh). Heat and bidirectional electricity meters are
+  // an array, all others a plain number.
   server.on("/api/values", HTTP_GET, []() {
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     const AppConfig &cfg = configManager.config();
-    for (size_t i = 0; i < cfg.meterCount; ++i) arr.add(cfg.meters[i].value);
+    for (size_t i = 0; i < cfg.meterCount; ++i) {
+      const VirtualMeter &m = cfg.meters[i];
+      if (isHeatMeter(m)) {
+        JsonArray h = arr.add<JsonArray>();
+        h.add(m.value);
+        h.add(m.flow);
+        h.add(m.flowTemp);
+        h.add(m.returnTemp);
+      } else if (isBidirectionalMeter(m)) {
+        JsonArray e = arr.add<JsonArray>();
+        e.add(m.value);
+        for (size_t r = 0; r < ENERGY_REGS; ++r) e.add(m.energy[r]);
+      } else {
+        arr.add(m.value);
+      }
+    }
     sendJson(200, doc);
   });
 
@@ -142,7 +159,7 @@ void setupRestApi() {
     sendJson(200, doc);
   });
 
-  // PUT/POST /api/meters with [{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]
+  // PUT/POST /api/meters with [{"index":1,"value":1.5},{"primaryAddress":7,"value":2,"flowTemp":70}]
   // or {"meters":[...]}. All items are validated first, then applied together.
   auto setMany = []() {
     JsonDocument body;
@@ -150,24 +167,22 @@ void setupRestApi() {
     JsonArray items = body.is<JsonArray>() ? body.as<JsonArray>() : body["meters"].as<JsonArray>();
     if (items.isNull() || items.size() == 0) return sendJsonError(400, "Liste von Zählern erwartet");
 
-    std::vector<std::pair<int, double>> updates;
+    std::vector<std::pair<int, MeterUpdate>> updates;
     for (size_t k = 0; k < items.size(); ++k) {
       JsonObject item = items[k].as<JsonObject>();
       int idx = meterIndexFromItem(item);
       if (idx < 0) return sendJsonError(400, "Eintrag " + String(k + 1) + ": unbekannter Zähler (index oder primaryAddress)");
-      if (!item["value"].is<double>()) return sendJsonError(400, "Eintrag " + String(k + 1) + ": 'value' fehlt");
-      double v = item["value"].as<double>();
+      MeterUpdate u;
       String error;
-      if (!ConfigManager::checkValue(configManager.config().meters[idx], v, error))
+      if (!ConfigManager::parseUpdate(configManager.config().meters[idx], item, u, error))
         return sendJsonError(400, "Zähler " + String(idx + 1) + ": " + error);
-      updates.emplace_back(idx, v);
+      updates.emplace_back(idx, u);
     }
 
     JsonDocument doc;
     JsonArray arr = doc.to<JsonArray>();
     for (auto &u : updates) {
-      String error;
-      configManager.setMeterValue(u.first, u.second, error);
+      configManager.applyUpdate(u.first, u.second);
       mqtt.publishMeter(u.first);
       configManager.meterToJson(u.first, arr.add<JsonObject>());
     }
@@ -185,15 +200,18 @@ void setupRestApi() {
     sendJson(200, doc);
   });
 
-  // PUT/POST /api/meters/<n> with {"value":123.456}
+  // PUT/POST /api/meters/<n> with {"value":123.456}; heat meters also flow/flowTemp/returnTemp,
+  // bidirectional electricity meters "1.8.0" ... "2.8.2"
   auto setOne = []() {
     int idx = meterIndexFromPath();
     if (idx < 0) return sendJsonError(404, "Unbekannter Zähler");
     JsonDocument body;
-    if (deserializeJson(body, server.arg("plain")) || !body["value"].is<double>())
-      return sendJsonError(400, "JSON mit 'value' erwartet");
+    if (deserializeJson(body, server.arg("plain"))) return sendJsonError(400, "Ungültiges JSON");
+    MeterUpdate u;
     String error;
-    if (!configManager.setMeterValue(idx, body["value"].as<double>(), error)) return sendJsonError(400, error);
+    if (!ConfigManager::parseUpdate(configManager.config().meters[idx], body.as<JsonObjectConst>(), u, error))
+      return sendJsonError(400, error);
+    configManager.applyUpdate(idx, u);
     mqtt.publishMeter(idx);
     JsonDocument doc;
     configManager.meterToJson(idx, doc.to<JsonObject>());
