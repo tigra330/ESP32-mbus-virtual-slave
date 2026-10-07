@@ -327,7 +327,9 @@ Beispiel für eine `state`-Nachricht:
  "medium":7,"value":123.456,"unit":"m3","resolution":0.001,"maxValue":4294967.295}
 ```
 
-Bei Wärmezählern enthält sie zusätzlich `"flow"`, `"flowTemp"` und `"returnTemp"`, bei Strom 2-Richtung `"bidirectional":true` und die Register `"1.8.0"` … `"2.8.2"`.
+Bei Wärmezählern enthält sie zusätzlich `"flow"`, `"flowTemp"` und `"returnTemp"`, bei Strom 2-Richtung `"bidirectional":true` und die Register `"1.8.0"` … `"2.8.2"`. Zähler, die ein [Impulseingang](#impulseingänge) zählt, haben zusätzlich `"pulseInput"` (1 oder 2), `"pulseStartValue"` und `"pulseCount"`.
+
+Bei Impulszählern wird `state` nach jedem gezählten Impuls neu veröffentlicht. Ein `set` auf einen solchen Zähler setzt den Startwert neu, die Impulse beginnen wieder bei 0.
 
 Der MQTT-Client (esp-mqtt aus dem ESP-IDF) läuft in einer eigenen Task. Ist der Broker nicht erreichbar, beantwortet der ESP32 M-Bus-Abfragen trotzdem ohne Verzögerung.
 
@@ -348,6 +350,7 @@ Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`
 | GET | `/api/values` | – | nur die Werte, kompakt für die Weboberfläche: pro Zähler eine Zahl, bei Wärmezählern `[value, flow, flowTemp, returnTemp]`, bei Strom 2-Richtung `[1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2]` |
 | PUT | `/api/meters/<n>` | `{"value":123.456}`, bei Wärmezählern zusätzlich `flow`, `flowTemp`, `returnTemp`, bei Strom 2-Richtung `1.8.0` … `2.8.2` | Werte setzen (mindestens ein Feld) |
 | PUT | `/api/meters` | `[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]` oder `{"meters":[...]}` | mehrere Zähler setzen |
+| GET | `/api/status` | – | M-Bus-Monitor, MQTT- und BME280-Status, bei Impulseingängen `pulses`: pro Eingang `enabled`, `meter`, `startValue`, `count`, `value`, `unit` |
 
 Beim Setzen mehrerer Zähler kann jeder Eintrag über `index` (Zählernummer) oder `primaryAddress` angesprochen werden. Zuerst werden alle Einträge geprüft. Ist einer ungültig, wird nichts übernommen.
 
@@ -366,6 +369,8 @@ curl -X PUT http://<ip>/api/meters/3 -d '{"1.8.0":1000,"1.8.1":600,"1.8.2":400,"
 
 Jede Änderung per REST wird zusätzlich als MQTT-`state` veröffentlicht.
 
+`value` auf einem Zähler, den ein Impulseingang zählt, setzt dessen Startwert: Der Zählerstand übernimmt den Wert und die Impulse beginnen wieder bei 0.
+
 **Sicherheit:** Die REST-API hat wie die Weboberfläche keine Authentifizierung. Jeder im Netz kann Werte setzen.
 
 ## Speicherung
@@ -378,11 +383,13 @@ Große Konfigurationen werden in kleinen Stücken übertragen, damit kein große
 
 **Zählerstände** und die übrigen Messwerte (Wärmezähler, Register von Strom 2-Richtung), die per MQTT oder REST gesetzt werden, sind sofort per M-Bus abrufbar. Im Flash gespeichert werden sie verzögert: nach 10 s ohne weitere Änderung, spätestens 60 s nach der ersten Änderung. Sie liegen in einer eigenen Datei `/values.bin` auf LittleFS (250 Zähler × 9 Werte × 8 Bytes ≈ 18 KB), getrennt von der Konfiguration. Das schont den Flash auch bei häufigen Updates.
 
+Startwert und Impulszahl der **Impulseingänge** liegen in `/pulses.bin` und werden immer zusammen mit `/values.bin` geschrieben, also mit derselben Verzögerung. Bei laufenden Impulsen wird damit höchstens einmal pro Minute gespeichert. Nach einem Stromausfall fehlen höchstens die Impulse seit dem letzten Speichern.
+
 Ältere Firmware hat die Werte im NVS gespeichert. Sie werden beim ersten Start automatisch übernommen (serielle Ausgabe: `Meter values migrated from NVS to LittleFS`).
 
 Die Weboberfläche lädt die Zählerstände automatisch neu, sodass Änderungen per MQTT oder REST direkt sichtbar sind. Ein Feld, das gerade bearbeitet wird, wird dabei nicht überschrieben und bleibt gelb markiert, bis gespeichert wird. Das Intervall wird oben auf der Seite unter der Überschrift eingestellt (Aus, 1 … 60 s, Standard 2 s) und im Browser gespeichert.
 
-**Hinweis:** „Speichern“ in der Weboberfläche überträgt alle angezeigten Zählerstände. Ein gelb markiertes (bearbeitetes) Feld überschreibt dabei einen Wert, der zwischenzeitlich per MQTT oder REST gesetzt wurde.
+**Hinweis:** „Speichern“ in der Weboberfläche überträgt alle angezeigten Zählerstände. Ein gelb markiertes (bearbeitetes) Feld überschreibt dabei einen Wert, der zwischenzeitlich per MQTT oder REST gesetzt wurde. Ausgenommen sind Zähler, die ein Impulseingang zählt: Ihr Feld ist gesperrt und ihr Stand wird beim Speichern nicht übertragen, damit gezählte Impulse nicht verloren gehen.
 
 ## Broadcast
 
