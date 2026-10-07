@@ -23,6 +23,16 @@ static const char *VALUES_TMP = "/values.tmp";
 static constexpr uint32_t VALUES_MAGIC = 0x3156424D; // "MBV1"
 static constexpr uint32_t VALUES_PER_METER = 4 + ENERGY_REGS;
 static constexpr uint32_t VALUE_SAVE_QUIET_MS = 10000;
+// Pulse input state, saved together with the values: magic, input count, then per input
+// startValue (double), count (uint32), reserved (uint32).
+static const char *PULSES_FILE = "/pulses.bin";
+static const char *PULSES_TMP = "/pulses.tmp";
+static constexpr uint32_t PULSES_MAGIC = 0x3150424D; // "MBP1"
+struct PulseRow {
+  double startValue;
+  uint32_t count;
+  uint32_t reserved;
+};
 static constexpr uint32_t VALUE_SAVE_MAX_MS = 60000;
 
 // Replaces dst by tmp, so a power loss never leaves a truncated file behind.
@@ -55,6 +65,10 @@ void ConfigManager::factoryDefaults() {
     cfg_.meters[i].unit = "m3";
     cfg_.meters[i].resolutionExp = -3;
   }
+  for (size_t i = 0; i < PULSE_INPUTS; ++i) {
+    cfg_.pulses[i].pin = i == 0 ? 32 : 33;
+    cfg_.pulses[i].meter = static_cast<uint16_t>(i + 1);
+  }
 }
 
 bool ConfigManager::load() {
@@ -65,6 +79,7 @@ bool ConfigManager::load() {
     f.close();
     if (ok) {
       loadValues();
+      syncPulses();
       return true;
     }
     Serial.println("Config invalid, loading defaults: " + error);
@@ -91,6 +106,7 @@ bool ConfigManager::load() {
 }
 
 bool ConfigManager::save() {
+  syncPulses();
   bool ok = false;
   {
     JsonDocument doc;
@@ -118,6 +134,20 @@ bool ConfigManager::saveValues() {
   }
   f.close();
   if (ok) ok = replaceFile(VALUES_TMP, VALUES_FILE);
+
+  f = LittleFS.open(PULSES_TMP, "w");
+  bool pulsesOk = static_cast<bool>(f);
+  if (pulsesOk) {
+    const uint32_t ph[2] = {PULSES_MAGIC, PULSE_INPUTS};
+    pulsesOk = f.write(reinterpret_cast<const uint8_t *>(ph), sizeof(ph)) == sizeof(ph);
+    for (size_t i = 0; pulsesOk && i < PULSE_INPUTS; ++i) {
+      const PulseRow row = {cfg_.pulses[i].startValue, cfg_.pulses[i].count, 0};
+      pulsesOk = f.write(reinterpret_cast<const uint8_t *>(&row), sizeof(row)) == sizeof(row);
+    }
+    f.close();
+  }
+  if (pulsesOk) pulsesOk = replaceFile(PULSES_TMP, PULSES_FILE);
+  ok = ok && pulsesOk;
   // Not retried on failure: loop() would otherwise rewrite the flash on every pass.
   valuesDirty_ = false;
   return ok;
@@ -128,6 +158,7 @@ static bool validFlow(double v) { return isfinite(v) && v >= 0 && v <= FLOW_MAX;
 static bool validTemp(double v) { return isfinite(v) && v >= TEMP_MIN && v <= TEMP_MAX; }
 
 void ConfigManager::loadValues() {
+  loadPulses();
   File f = LittleFS.open(VALUES_FILE, "r");
   if (!f) {
     if (loadLegacyValues() && saveValues()) {
@@ -156,6 +187,60 @@ void ConfigManager::loadValues() {
     }
   }
   f.close();
+}
+
+void ConfigManager::loadPulses() {
+  File f = LittleFS.open(PULSES_FILE, "r");
+  if (!f) return;
+  uint32_t header[2];
+  if (f.read(reinterpret_cast<uint8_t *>(header), sizeof(header)) != sizeof(header) || header[0] != PULSES_MAGIC) {
+    f.close();
+    return;
+  }
+  for (size_t i = 0; i < header[1] && i < PULSE_INPUTS; ++i) {
+    PulseRow row;
+    if (f.read(reinterpret_cast<uint8_t *>(&row), sizeof(row)) != sizeof(row)) break;
+    if (!validCount(row.startValue)) continue;
+    cfg_.pulses[i].startValue = row.startValue;
+    cfg_.pulses[i].count = row.count;
+  }
+  f.close();
+}
+
+void ConfigManager::syncPulses() {
+  for (PulseInput &p : cfg_.pulses) {
+    if (!p.enabled || p.meter < 1 || p.meter > cfg_.meterCount) continue;
+    const double value = cfg_.meters[p.meter - 1].value;
+    const double expected = p.startValue + p.count * p.factor;
+    // Tolerance: the value may have taken a round trip through the JSON config.
+    if (fabs(value - expected) <= 1e-9 * fmax(1.0, fabs(value))) continue;
+    p.startValue = value;
+    p.count = 0;
+    markValuesDirty();
+  }
+}
+
+void ConfigManager::addPulses(size_t input, uint32_t pulses) {
+  if (input >= PULSE_INPUTS || pulses == 0) return;
+  PulseInput &p = cfg_.pulses[input];
+  if (!p.enabled || p.meter < 1 || p.meter > cfg_.meterCount) return;
+  p.count += pulses;
+  cfg_.meters[p.meter - 1].value = p.startValue + p.count * p.factor;
+  markValuesDirty();
+}
+
+int ConfigManager::pulseInputOf(size_t index) const {
+  for (size_t i = 0; i < PULSE_INPUTS; ++i) {
+    if (cfg_.pulses[i].enabled && cfg_.pulses[i].meter == index + 1) return static_cast<int>(i);
+  }
+  return -1;
+}
+
+void ConfigManager::markValuesDirty() {
+  uint32_t now = millis();
+  if (!valuesDirty_) firstDirtyMs_ = now;
+  lastChangeMs_ = now;
+  valuesDirty_ = true;
 }
 
 bool ConfigManager::loadLegacyValues() {
@@ -309,10 +394,9 @@ void ConfigManager::applyUpdate(size_t index, const MeterUpdate &u) {
   set(u.hasReturnTemp, u.returnTemp, m.returnTemp);
   for (size_t r = 0; r < ENERGY_REGS; ++r) set(u.hasEnergy[r], u.energy[r], m.energy[r]);
   if (changed) {
-    uint32_t now = millis();
-    if (!valuesDirty_) firstDirtyMs_ = now;
-    lastChangeMs_ = now;
-    valuesDirty_ = true;
+    markValuesDirty();
+    // A value set on a pulse-counted meter is its new start value.
+    syncPulses();
   }
 }
 
@@ -337,6 +421,12 @@ void ConfigManager::meterToJson(size_t index, JsonObject o) const {
     o["bidirectional"] = true;
     o["1.8.0"] = m.value;
     for (size_t r = 0; r < ENERGY_REGS; ++r) o[ENERGY_REG_NAMES[r]] = m.energy[r];
+  }
+  int pi = pulseInputOf(index);
+  if (pi >= 0) {
+    o["pulseInput"] = pi + 1;
+    o["pulseStartValue"] = cfg_.pulses[pi].startValue;
+    o["pulseCount"] = cfg_.pulses[pi].count;
   }
 }
 
@@ -366,6 +456,18 @@ void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
   s["sdaPin"] = cfg_.sensor.sdaPin;
   s["sclPin"] = cfg_.sensor.sclPin;
   s["i2cAddress"] = cfg_.sensor.i2cAddress;
+
+  JsonArray pulses = doc["pulses"].to<JsonArray>();
+  for (const PulseInput &p : cfg_.pulses) {
+    JsonObject o = pulses.add<JsonObject>();
+    o["enabled"] = p.enabled;
+    o["pin"] = p.pin;
+    o["pullup"] = p.pullup;
+    o["activeLow"] = p.activeLow;
+    o["debounceMs"] = p.debounceMs;
+    o["meter"] = p.meter;
+    o["factor"] = p.factor;
+  }
 
   JsonArray meters = doc["meters"].to<JsonArray>();
   for (size_t i = 0; i < cfg_.meterCount && i < MAX_METERS; ++i) {
@@ -463,7 +565,8 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
     if (cfg_.meters[i].manufacturer.length() != 3) cfg_.meters[i].manufacturer = "BAS";
     cfg_.meters[i].version = m.isNull() ? 1 : (m["version"] | 1);
     cfg_.meters[i].medium = m.isNull() ? 0x07 : (m["medium"] | 0x07);
-    cfg_.meters[i].value = m.isNull() ? 0.0 : (m["value"] | 0.0);
+    // Missing value keeps the current one (the web UI omits it for pulse-counted meters).
+    cfg_.meters[i].value = m.isNull() ? 0.0 : (m["value"] | cfg_.meters[i].value);
     cfg_.meters[i].unit = m.isNull() ? "m3" : m["unit"].as<String>();
     if (cfg_.meters[i].unit != "m3" && cfg_.meters[i].unit != "kWh") cfg_.meters[i].unit = "m3";
 
@@ -507,6 +610,58 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
   sc.sdaPin = s["sdaPin"] | 21;
   sc.sclPin = s["sclPin"] | 22;
   sc.i2cAddress = (s["i2cAddress"] | 0x76) == 0x77 ? 0x77 : 0x76;
+
+  JsonArray pa = doc["pulses"].as<JsonArray>();
+  for (size_t i = 0; i < PULSE_INPUTS; ++i) {
+    JsonObject o;
+    if (!pa.isNull() && i < pa.size()) o = pa[i].as<JsonObject>();
+    PulseInput &p = cfg_.pulses[i];
+    const String name = "Impulseingang " + String(i + 1) + ": ";
+    p.enabled = o["enabled"] | false;
+    p.pin = o["pin"] | (i == 0 ? 32 : 33);
+    p.pullup = o["pullup"] | true;
+    p.activeLow = o["activeLow"] | true;
+    p.debounceMs = static_cast<uint16_t>(constrain(o["debounceMs"] | 20, 1, 1000));
+    p.meter = static_cast<uint16_t>(constrain(o["meter"] | static_cast<int>(i + 1), 1, static_cast<int>(MAX_METERS)));
+    double factor = o["factor"] | 0.001;
+    if (!isfinite(factor) || factor <= 0 || factor > 1e6) {
+      error = name + "Faktor muss größer 0 und höchstens 1000000 sein";
+      return false;
+    }
+    p.factor = factor;
+    if (!p.enabled) continue;
+
+    if (p.meter > cfg_.meterCount) {
+      error = name + "Zähler " + String(p.meter) + " existiert nicht";
+      return false;
+    }
+    // GPIO 6-11 are the SPI flash, 20/24/28-31 do not exist on the ESP32.
+    if (p.pin < 0 || p.pin > 39 || (p.pin >= 6 && p.pin <= 11) || p.pin == 20 || p.pin == 24 ||
+        (p.pin >= 28 && p.pin <= 31)) {
+      error = name + "GPIO " + String(p.pin) + " ist als Eingang nicht nutzbar";
+      return false;
+    }
+    if (p.pullup && p.pin >= 34) {
+      error = name + "GPIO 34-39 haben keinen internen Pull-up, externen Widerstand verwenden";
+      return false;
+    }
+    if (p.pin == cfg_.mbusRxPin || p.pin == cfg_.mbusTxPin ||
+        (sc.enabled && (p.pin == sc.sdaPin || p.pin == sc.sclPin))) {
+      error = name + "GPIO " + String(p.pin) + " ist schon für M-Bus-UART oder I²C belegt";
+      return false;
+    }
+    for (size_t j = 0; j < i; ++j) {
+      if (!cfg_.pulses[j].enabled) continue;
+      if (cfg_.pulses[j].pin == p.pin) {
+        error = name + "GPIO " + String(p.pin) + " ist schon von Impulseingang " + String(j + 1) + " belegt";
+        return false;
+      }
+      if (cfg_.pulses[j].meter == p.meter) {
+        error = name + "Zähler " + String(p.meter) + " wird schon von Impulseingang " + String(j + 1) + " gezählt";
+        return false;
+      }
+    }
+  }
 
   // Reject duplicate active primary addresses.
   if (sc.enabled) {

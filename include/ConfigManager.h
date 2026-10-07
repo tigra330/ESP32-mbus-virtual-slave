@@ -38,6 +38,10 @@ public:
   void meterToJson(size_t index, JsonObject out) const;
   static double maxValue(const VirtualMeter &meter);
   static bool checkValue(const VirtualMeter &meter, double value, String &error);
+  // Adds pulses of an enabled pulse input to its meter.
+  void addPulses(size_t input, uint32_t pulses);
+  // Pulse input (0-based) counting this meter, -1 if none.
+  int pulseInputOf(size_t index) const;
   // Persists values changed via setMeterValue()/applyUpdate() delayed, to spare the flash.
   void loop();
 
@@ -48,8 +52,13 @@ private:
   uint32_t firstDirtyMs_ = 0;
   uint32_t lastChangeMs_ = 0;
 
+  void markValuesDirty();
+  // Restarts a pulse input from its meter's value when that no longer matches
+  // startValue + count * factor (value set from outside, factor or meter changed).
+  void syncPulses();
   bool saveValues();
   void loadValues();
+  void loadPulses();
   bool loadLegacyValues();
   bool fromDoc(JsonDocument &doc, String &error);
 };

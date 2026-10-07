@@ -8,6 +8,7 @@
 #include "MBusSlave.h"
 #include "MqttBridge.h"
 #include "Bme280Sensor.h"
+#include "PulseCounter.h"
 #include "WebUi.h"
 #include "ApiDocs.h"
 
@@ -17,6 +18,7 @@ HardwareSerial MBusSerial(2);
 MBusSlave mbus(MBusSerial);
 MqttBridge mqtt;
 Bme280Sensor bme280;
+PulseCounter pulses;
 String wifiModeText = "AP";
 
 // POST /api/config bodies (~45 KB for 250 meters) are streamed here instead of into RAM:
@@ -282,6 +284,7 @@ void setupWeb() {
       return;
     }
     mqtt.restart();
+    pulses.apply();
     server.send(200, "text/plain", "Gespeichert. Änderungen an WLAN, UART und BME280 (Aktivieren, I²C-Pins) werden nach Neustart aktiv.");
   }, receiveConfig);
 
@@ -296,6 +299,18 @@ void setupWeb() {
     doc["lastTx"] = mbus.lastTxHex();
     doc["mqtt"] = mqtt.statusText();
     doc["sensor"] = bme280.statusText();
+    JsonArray pa = doc["pulses"].to<JsonArray>();
+    const AppConfig &cfg = configManager.config();
+    for (const PulseInput &p : cfg.pulses) {
+      JsonObject o = pa.add<JsonObject>();
+      o["enabled"] = p.enabled;
+      if (!p.enabled) continue;
+      o["meter"] = p.meter;
+      o["startValue"] = p.startValue;
+      o["count"] = p.count;
+      o["value"] = cfg.meters[p.meter - 1].value;
+      o["unit"] = cfg.meters[p.meter - 1].unit;
+    }
     String out; serializeJson(doc, out);
     server.send(200, "application/json", out);
   });
@@ -325,6 +340,7 @@ void setup() {
   bme280.begin(&configManager.config().sensor);
   mbus.begin(&configManager.config(), &bme280);
   mqtt.begin(&configManager);
+  pulses.begin(&configManager, &mqtt);
 
   Serial.printf("M-Bus UART: RX=%d TX=%d Baud=%lu 8E%u\n",
                 configManager.config().mbusRxPin,
@@ -337,6 +353,7 @@ void loop() {
   server.handleClient();
   mbus.loop();
   bme280.loop();
+  pulses.loop();
   mqtt.loop();
   configManager.loop();
   delay(1);

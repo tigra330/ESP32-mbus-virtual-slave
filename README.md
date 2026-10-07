@@ -16,6 +16,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - einstellbare Auflösung pro Zähler (0,001 … 10)
 - Wärmezähler zusätzlich mit Durchfluss, Vorlauf- und Rücklauftemperatur
 - Zählertyp Strom 2-Richtung mit den OBIS-Registern 1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2
+- 2 Impulseingänge (Reedkontakt, S0) mit Entprellung, Faktor und Startwert, zählen je einen virtuellen Zähler
 - optionaler BME280-Sensor (Temperatur, Luftfeuchte, Luftdruck) als eigener M-Bus-Slave mit einstellbarer Primäradresse
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
@@ -89,6 +90,43 @@ Beispiel 21,53 °C, 45,20 %, 1013 hPa:
 Liefert der Sensor keine gültigen Werte (nicht gefunden oder abgezogen), antwortet der Slave trotzdem, mit Status-Byte `0x10` (vorübergehender Fehler) und den Werten 0.
 
 Der Sensor misst auch die Eigenwärme von ESP32 und Netzteil mit. Für genaue Raumtemperaturen den BME280 mit etwas Abstand (Kabel) zum ESP32 montieren.
+
+## Impulseingänge
+
+Zwei GPIOs können Impulse zählen, z. B. vom Reedkontakt eines Wasserzählers oder vom S0-Ausgang eines Stromzählers. Jeder Eingang zählt einen virtuellen Zähler:
+
+```text
+Zählerstand = Startwert + Impulse × Faktor
+```
+
+**Anschluss** (Standard): Kontakt bzw. S0-Ausgang zwischen GPIO und GND, interner Pull-up aktiv.
+
+| Eingang | Standard-GPIO |
+|---|---|
+| Impulseingang 1 | GPIO 32 |
+| Impulseingang 2 | GPIO 33 |
+
+S0-Ausgang: S0+ an den GPIO, S0− an GND. GPIO 34–39 haben keinen internen Pull-up und brauchen einen externen Widerstand (z. B. 10 kΩ nach 3,3 V). Nie mehr als 3,3 V an einen GPIO legen.
+
+**Einstellungen** in der Karte **Impulseingänge**:
+
+| Feld | Standard | Beschreibung |
+|---|---|---|
+| Aktiv | Nein | |
+| GPIO | 32 / 33 | nicht 6–11 (Flash), nicht M-Bus-UART- oder I²C-Pins |
+| Pull-up intern | Ja | |
+| Impuls aktiv bei | Low | Low = Kontakt schließt nach GND |
+| Entprellzeit | 20 ms | 1–1000 ms. Der Eingang muss so lange stabil aktiv sein, damit ein Impuls zählt, und genauso lange inaktiv, bevor der nächste zählt. Höchste Impulsfrequenz ≈ 1 / (2 × Entprellzeit). |
+| Zähler-Nr. | 1 / 2 | der gezählte virtuelle Zähler (1 … Anzahl Zähler), je Zähler nur ein Eingang |
+| Faktor | 0,001 | Wert pro Impuls in der Einheit des Zählers, z. B. 0,001 m³ = 1 l/Impuls, 0,001 kWh = 1000 Imp./kWh |
+
+Die Einstellungen gelten sofort nach dem Speichern, ohne Neustart. Die Eingänge werden jede Millisekunde per Timer abgetastet, unabhängig von WLAN- und M-Bus-Verkehr.
+
+**Startwert:** Im Feld *Startwert* den aktuellen Stand des echten Zählers eintragen und *Setzen* drücken. Ab da werden die Impulse mit dem Faktor addiert. Das Setzen des Zählerstands per REST (`PUT /api/meters/<n>`) oder MQTT (`…/meter/<n>/set`) wirkt genauso: neuer Startwert, Impulse beginnen wieder bei 0. Ändert sich Faktor oder Zähler-Nr., zählt der Eingang ab dem aktuellen Stand weiter. Im Zähler-Abschnitt ist das Feld Zählerstand für gezählte Zähler gesperrt.
+
+Startwert und Impulszahl werden zusammen mit den Zählerständen gespeichert (`/pulses.bin`), spätestens 60 s nach dem letzten Impuls. Bei Stromausfall gehen höchstens die Impulse dieser letzten 60 s verloren.
+
+`GET /api/meters/<n>` liefert bei gezählten Zählern zusätzlich `pulseInput`, `pulseStartValue` und `pulseCount`.
 
 ## Sende-Workarounds (Stoppbits / Byte-Pause)
 

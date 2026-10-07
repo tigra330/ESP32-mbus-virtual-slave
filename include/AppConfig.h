@@ -49,6 +49,25 @@ struct SensorConfig {
   uint8_t accessNumber = 0;     // runtime RSP_UD access counter
 };
 
+// Pulse input (reed contact, S0 output) that counts one virtual meter.
+// Meter value = startValue + count * factor. Setting the meter value (web UI, REST, MQTT)
+// starts counting again from that value.
+static constexpr size_t PULSE_INPUTS = 2;
+
+struct PulseInput {
+  bool enabled = false;
+  int pin = 32;
+  bool pullup = true;           // internal pull-up (not available on GPIO 34-39)
+  bool activeLow = true;        // pulse = input low (contact / S0 output switching to GND)
+  uint16_t debounceMs = 20;     // level must be stable this long (1..1000)
+  uint16_t meter = 1;           // counted meter, 1-based
+  double factor = 0.001;        // meter unit per pulse, e.g. 0.001 m3 = 1 l per pulse
+
+  // Runtime state, persisted with the meter values.
+  double startValue = 0.0;
+  uint32_t count = 0;
+};
+
 struct AppConfig {
   String wifiSsid;
   String wifiPassword;
@@ -66,4 +85,5 @@ struct AppConfig {
   String mqttBaseTopic = "bascloud/mbus";
   VirtualMeter meters[MAX_METERS];
   SensorConfig sensor;
+  PulseInput pulses[PULSE_INPUTS];
 };
