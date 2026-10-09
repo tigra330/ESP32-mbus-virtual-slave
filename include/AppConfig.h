@@ -73,6 +73,12 @@ struct PulseInput {
 struct AppConfig {
   String wifiSsid;
   String wifiPassword;
+  // Basic auth for the web UI and API (except the status page). Off until a password is set.
+  bool authEnabled = false;
+  String authUser = "admin";
+  String authPassword;
+  // Serve the web UI and API docs from the ESP. Off when the UI runs elsewhere; the REST API stays.
+  bool webUiEnabled = true;
   uint32_t mbusBaud = 2400;
   uint8_t mbusStopBits = 1;     // 2 = workaround for slaves whose bus-side supply sags on long space runs
   uint8_t mbusByteGapMs = 10;   // idle time after each sent byte, same workaround (0 = standard-compliant, max 20)

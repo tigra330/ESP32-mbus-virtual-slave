@@ -16,6 +16,8 @@
 //                          bidirectional electricity meters {"1.8.0":1,"1.8.1":2,...,"2.8.2":6}
 //   <base>/meter/<n>/state publish (retained): meter as JSON
 //   <base>/error           publish: rejected set messages
+//   <base>/webui/set       subscribe: local web UI "on"/"off" (also 1/0, true/false, {"enabled":true})
+//   <base>/webui/state     publish (retained): "on" / "off"
 class MqttBridge {
 public:
   void begin(ConfigManager *config);
@@ -25,27 +27,32 @@ public:
   // Queue state publishes; loop() sends them throttled so 250 meters don't flood the outbox.
   void publishMeter(size_t index);
   void publishAll();
+  void publishWebUi() { pendingWebUi_ = true; }
   bool connected() const { return connected_; }
   String statusText() const;
 
 private:
   struct SetMessage {
-    uint8_t index; // 0-based
+    uint8_t index; // 0-based meter, WEBUI_SET for <base>/webui/set
     char payload[256];
   };
+
+  static constexpr uint8_t WEBUI_SET = 0xFF;
 
   ConfigManager *config_ = nullptr;
   esp_mqtt_client_handle_t client_ = nullptr;
   QueueHandle_t queue_ = nullptr;
-  String uri_, clientId_, statusTopic_, setPrefix_;
+  String uri_, clientId_, statusTopic_, setPrefix_, webUiTopic_;
   volatile bool connected_ = false;
   volatile bool needPublishAll_ = false;
   String lastEvent_ = "deaktiviert";
   bool pending_[MAX_METERS]{};
+  volatile bool pendingWebUi_ = false;
 
   void start();
   void stop();
   void handleSet(const SetMessage &msg);
+  void handleWebUi(const String &payload);
   void publish(const String &topic, const String &payload, bool retain);
   void sendPending();
   static void handleEvent(MqttBridge *self, esp_mqtt_event_handle_t event);

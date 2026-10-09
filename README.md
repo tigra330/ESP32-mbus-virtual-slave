@@ -22,6 +22,9 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - REST-API zum Abfragen und Setzen der Zählerstände
 - Weboberfläche zur Konfiguration mit Menü (Status, Zähler, Impulse, BME280, MQTT, System)
 - Firmware-Update über die Weboberfläche (OTA)
+- optionale Anmeldung (HTTP Basic-Auth), Statusseite bleibt offen
+- Weboberfläche auch extern nutzbar (lokale Datei oder anderer Server), steuert den ESP über seine IP
+- lokale Weboberfläche abschaltbar, Wiedereinschalten per REST, MQTT oder BOOT-Taste
 - Konfiguration und Zählerstände persistent im ESP32-Flash (LittleFS)
 - WLAN-Client; bei fehlender/fehlerhafter WLAN-Konfiguration startet ein Access Point
 - M-Bus-Monitor im Browser mit letztem RX-/TX-Telegramm
@@ -139,8 +142,8 @@ In der Weboberfläche unter **System → M-Bus Schnittstelle** gibt es zwei Eins
 
 | Feld | Standard | Beschreibung |
 |---|---|---|
-| M-Bus Stoppbits | 1 (8E1) | 2 = 8E2: zusätzliches Stoppbit nach jedem Byte |
-| Pause nach jedem Byte | 10 ms | 0–20 ms Ruhepegel (Mark) nach jedem gesendeten Byte, 0 = normgerecht ohne Pause |
+| Stoppbits | 1 (8E1) | 2 = 8E2: zusätzliches Stoppbit nach jedem Byte |
+| Byte-Pause (ms) | 10 ms | 0–20 ms Ruhepegel (Mark) nach jedem gesendeten Byte, 0 = normgerecht ohne Pause |
 
 Mit 1 Stoppbit und 0 ms Pause sendet der ESP32 normgerecht nach EN 13757-2. Die Pause ist standardmäßig auf 10 ms gesetzt, weil das mit dem MikroE M-BUS Slave Click getestet funktioniert. Die Optionen sind ein Workaround für Slave-Platinen, deren Sendepfad auf der Busseite aus dem STC-Puffer des TSS721 versorgt wird.
 
@@ -239,7 +242,7 @@ Die Weboberfläche ist über ein Menü in Seiten gegliedert. Kopfzeile und Menü
 | **Impulse** | die 6 Impulseingänge, siehe [Impulseingänge](#impulseingänge) |
 | **BME280** | Sensor-Einstellungen und Messwerte, siehe [BME280-Sensor](#bme280-sensor) |
 | **MQTT** | Broker und Topics, siehe [MQTT](#mqtt) |
-| **System** | WLAN, M-Bus-Schnittstelle, Firmware-Update, Neustart, REST-API-Kurzreferenz |
+| **System** | WLAN, M-Bus-Schnittstelle, Anmeldung, Weboberfläche extern / lokal abschalten, Firmware-Update, Neustart, REST-API-Kurzreferenz |
 
 **Speichern** in der Kopfzeile speichert die komplette Konfiguration aller Seiten auf einmal. Meldungen und Fehler, z. B. bei ungültigen Werten, erscheinen direkt darunter. Die gewählte Seite steht in der Adresse (`#status`, `#zaehler`, `#impulse`, `#sensor`, `#mqtt`, `#system`) und bleibt beim Neuladen erhalten.
 
@@ -250,6 +253,65 @@ Auf der Seite **Zähler** sind Zähler markiert, die eine andere Funktion nutzt:
 
 Die Markierungen folgen den aktuellen Eingaben, auch vor dem Speichern.
 
+## Anmeldung
+
+Unter **System → Anmeldung** lässt sich ein Login aktivieren (Benutzer, Standard `admin`, und Passwort). Ab Werk ist die Anmeldung aus.
+
+- **Offen** bleiben die Seite **Status** (`/`, `/api/status`) und die OpenAPI-Spezifikation (`/api/openapi.json`).
+- **Geschützt** sind alle anderen Seiten der Weboberfläche, die komplette REST-API, das Firmware-Update und der Neustart.
+
+Beim Wechsel auf eine geschützte Seite fragt die Weboberfläche nach Benutzer und Passwort. Die Anmeldung gilt, bis der Browser-Tab geschlossen oder **Abmelden** gedrückt wird. Die API-Dokumentation `/api/docs` nutzt den Login-Dialog des Browsers.
+
+Per Kommandozeile:
+
+```bash
+curl -u admin:passwort http://<ip>/api/meters
+```
+
+Leeres Passwortfeld beim Speichern = Passwort unverändert. Zum Aktivieren muss ein Passwort gesetzt werden.
+
+**Passwort vergessen:** Die BOOT-Taste am ESP32 im laufenden Betrieb 5 s gedrückt halten. Danach ist die Anmeldung aus und die [lokale Weboberfläche](#lokale-weboberfläche-abschalten) eingeschaltet (serielle Ausgabe: `Login disabled, web UI enabled (BOOT button)`). Das funktioniert nicht, wenn ein Impulseingang auf GPIO 0 liegt.
+
+Basic-Auth überträgt das Passwort nur Base64-kodiert, nicht verschlüsselt (kein https auf dem ESP32). Sie schützt vor versehentlichen Änderungen im LAN, ersetzt aber kein abgeschottetes Netz. Für den Zugriff von unterwegs ein VPN ins Heimnetz nutzen, den ESP32 nicht per Portweiterleitung ins Internet stellen.
+
+## Weboberfläche extern nutzen
+
+Die Weboberfläche muss nicht vom ESP32 selbst geladen werden. Sie kann auch als lokale Datei oder von einem anderen Webserver im LAN (NAS, Home Assistant, …) laufen und den ESP32 über seine IP-Adresse steuern, z. B. um mehrere Geräte von einer Stelle aus zu verwalten.
+
+1. Unter **System → Weboberfläche extern nutzen** auf **Weboberfläche herunterladen** klicken (oder `http://<ip>/` speichern).
+2. Die Datei lokal öffnen oder auf den anderen Server legen.
+3. Beim Öffnen fragt die Seite nach der ESP-Adresse (und ggf. dem Login). Die Adresse wird im Browser gespeichert und steht in der Kopfzeile. Ein Klick darauf ändert sie.
+
+Alternativ die Adresse direkt in der URL angeben: `http://nas.local/mbus.html?esp=192.168.1.50`.
+
+Der ESP32 erlaubt dafür Anfragen von fremden Seiten (CORS). Einschränkungen:
+
+- Die externe Seite muss per **http** oder als lokale Datei laufen. Von einer https-Seite blockiert der Browser Anfragen an den ESP32 (http).
+- Öffentliche Webseiten im Internet dürfen in neueren Browsern keine Geräte im lokalen Netz ansprechen.
+
+### Lokale Weboberfläche abschalten
+
+Wird die Weboberfläche nur noch extern genutzt, kann der ESP32 sie abschalten: **System → Weboberfläche extern nutzen → Lokale Weboberfläche auf dem ESP32 = Aus**, dann **Speichern**. Wird das auf dem ESP32 selbst gemacht, fragt die Seite vorher nach, denn sie ist danach dort nicht mehr erreichbar. Vorher die Weboberfläche herunterladen.
+
+Abgeschaltet sind dann nur die HTML-Seiten `/` (Konfiguration) und `/api/docs` (API-Doku). Sie antworten mit `404` und einem kurzen Hinweis, wie man sie wieder einschaltet. Weiter laufen:
+
+- die komplette REST-API (`/api/...`), also auch die externe Weboberfläche
+- MQTT
+- M-Bus, Impulseingänge, BME280
+
+Eine aktive [Anmeldung](#anmeldung) gilt weiter für alles außer `/api/status`.
+
+**Wieder einschalten** (jeder Weg wird sofort gespeichert und gilt ohne Neustart):
+
+| Weg | Befehl |
+|---|---|
+| externe Weboberfläche | **System → Lokale Weboberfläche auf dem ESP32 = Ein**, **Speichern** |
+| REST | `curl -X PUT http://<ip>/api/webui -d '{"enabled":true}'` (mit Anmeldung zusätzlich `-u benutzer:passwort`) |
+| MQTT | `mosquitto_pub -h <broker> -t <base>/webui/set -m on` |
+| BOOT-Taste | 5 s im laufenden Betrieb halten (schaltet zusätzlich die Anmeldung aus) |
+
+Abschalten geht auf denselben Wegen, z. B. `{"enabled":false}` bzw. `off`. Der aktuelle Zustand steht in `GET /api/webui`, im Feld `webUi` von `GET /api/status` und retained in `<base>/webui/state`.
+
 ## Firmware-Update (OTA)
 
 Neue Firmware kann über das Netzwerk eingespielt werden. Konfiguration und Zählerstände bleiben dabei erhalten.
@@ -258,10 +320,10 @@ Neue Firmware kann über das Netzwerk eingespielt werden. Konfiguration und Zäh
 2. In der Weboberfläche unter **System → Firmware-Update** die Datei `.pio/build/esp32dev/firmware.bin` auswählen und **Hochladen** drücken.
 3. Nach erfolgreichem Upload startet der ESP32 automatisch neu.
 
-Oder per Kommandozeile:
+Oder per Kommandozeile (`-u` nur bei aktiver [Anmeldung](#anmeldung)):
 
 ```bash
-curl -F "firmware=@.pio/build/esp32dev/firmware.bin" http://<ip>/api/update
+curl -u admin:passwort -F "firmware=@.pio/build/esp32dev/firmware.bin" http://<ip>/api/update
 ```
 
 Die neue Firmware wird in den gerade nicht aktiven App-Slot geschrieben. Schlägt der Upload fehl oder wird er abgebrochen, läuft die bisherige Firmware unverändert weiter. Nur `firmware.bin` hochladen, nicht `firmware.factory.bin`.
@@ -375,6 +437,8 @@ Nach dem Speichern verbindet sich der ESP32 sofort neu, ein Neustart ist nicht n
 | `<base>/meter/<n>/state` | vom ESP32 | Zähler als JSON, retained |
 | `<base>/error` | vom ESP32 | abgelehnte Werte mit Fehlermeldung |
 | `<base>/status` | vom ESP32 | `online` / `offline` (retained, Last Will) |
+| `<base>/webui/set` | an den ESP32 | [lokale Weboberfläche](#lokale-weboberfläche-abschalten) ein/aus: `on` / `off`, `1` / `0`, `true` / `false`, `ein` / `aus` oder `{"enabled":true}` |
+| `<base>/webui/state` | vom ESP32 | `on` / `off` (retained), nach jeder Änderung und beim Verbinden |
 
 Beispiel mit Mosquitto:
 
@@ -402,7 +466,7 @@ Der MQTT-Client (esp-mqtt aus dem ESP-IDF) läuft in einer eigenen Task. Ist der
 
 ## REST-API
 
-Eine ausführliche API-Dokumentation liefert das Gerät selbst unter `http://<ip>/api/docs`. Dort lassen sich alle Aufrufe auch direkt im Browser ausprobieren. Die OpenAPI-3-Spezifikation (z. B. für Postman oder Swagger) gibt es unter `http://<ip>/api/openapi.json`.
+Eine ausführliche API-Dokumentation liefert das Gerät selbst unter `http://<ip>/api/docs` (nur bei eingeschalteter lokaler Weboberfläche). Dort lassen sich alle Aufrufe auch direkt im Browser ausprobieren. Die OpenAPI-3-Spezifikation (z. B. für Postman oder Swagger) gibt es unter `http://<ip>/api/openapi.json`.
 
 Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`state`-Nachricht. POST funktioniert überall wie PUT.
 
@@ -413,11 +477,13 @@ Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`
 | GET | `/api/values` | – | nur die Werte, kompakt für die Weboberfläche: pro Zähler eine Zahl, bei Wärmezählern `[value, flow, flowTemp, returnTemp]`, bei Strom 2-Richtung `[1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2]` |
 | PUT | `/api/meters/<n>` | `{"value":123.456}`, bei Wärmezählern zusätzlich `flow`, `flowTemp`, `returnTemp`, bei Strom 2-Richtung `1.8.0` … `2.8.2` | Werte setzen (mindestens ein Feld) |
 | PUT | `/api/meters` | `[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]` oder `{"meters":[...]}` | mehrere Zähler setzen |
-| GET | `/api/status` | – | M-Bus-Monitor, MQTT- und BME280-Status, bei Impulseingängen `pulses`: pro Eingang `enabled`, `meter`, `startValue`, `count`, `value`, `unit` |
+| GET | `/api/status` | – | ohne Anmeldung: M-Bus-Monitor, MQTT- und BME280-Status, `auth` (Anmeldung aktiv), `webUi` (lokale Weboberfläche aktiv), bei Impulseingängen `pulses`: pro Eingang `enabled`, `meter`, `startValue`, `count`, `value`, `unit` |
 | GET | `/api/config` | – | komplette Konfiguration (ohne Passwörter) |
 | POST | `/api/config` | Konfiguration als JSON | komplette Konfiguration speichern, leere Passwörter bleiben unverändert |
 | POST | `/api/update` | `multipart/form-data` mit `firmware.bin` | Firmware-Update, danach Neustart, siehe [OTA](#firmware-update-ota) |
 | POST | `/api/restart` | – | ESP32 neu starten |
+| GET | `/api/webui` | – | `{"enabled":true}`: lokale Weboberfläche an/aus |
+| PUT | `/api/webui` | `{"enabled":true}` oder `{"enabled":false}` | [lokale Weboberfläche](#lokale-weboberfläche-abschalten) ein-/ausschalten |
 
 Beim Setzen mehrerer Zähler kann jeder Eintrag über `index` (Zählernummer) oder `primaryAddress` angesprochen werden. Zuerst werden alle Einträge geprüft. Ist einer ungültig, wird nichts übernommen.
 
@@ -438,7 +504,7 @@ Jede Änderung per REST wird zusätzlich als MQTT-`state` veröffentlicht.
 
 `value` auf einem Zähler, den ein Impulseingang zählt, setzt dessen Startwert: Der Zählerstand übernimmt den Wert und die Impulse beginnen wieder bei 0.
 
-**Sicherheit:** Die REST-API hat wie die Weboberfläche keine Authentifizierung. Jeder im Netz kann Werte setzen, die Konfiguration ändern und über `/api/update` eine andere Firmware einspielen. Das Gerät deshalb nur in einem vertrauenswürdigen Netz betreiben.
+**Sicherheit:** Ohne aktivierte [Anmeldung](#anmeldung) kann jeder im Netz Werte setzen, die Konfiguration ändern und über `/api/update` eine andere Firmware einspielen. Mit Anmeldung ist bis auf `/api/status` und `/api/openapi.json` alles per Basic-Auth geschützt (`curl -u benutzer:passwort …`).
 
 ## Speicherung
 
@@ -467,7 +533,6 @@ Auf M-Bus Test-/Broadcast-Adressen `0xFE` und `0xFF` antwortet v0.1 absichtlich 
 - Modbus TCP/RTU
 - mehrere Datenpunkte pro Zähler
 - weitere Einheiten und VIFs
-- Authentifizierung für Weboberfläche und REST-API
 - Secondary Address Selection
 - Änderung der Primäradresse über M-Bus
 - Import/Export der Konfiguration als JSON

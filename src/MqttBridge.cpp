@@ -31,6 +31,7 @@ void MqttBridge::start() {
   clientId_ = "bascloud-mbus-" + String(static_cast<uint32_t>(chip & 0xFFFFFF), HEX);
   statusTopic_ = cfg.mqttBaseTopic + "/status";
   setPrefix_ = cfg.mqttBaseTopic + "/meter/";
+  webUiTopic_ = cfg.mqttBaseTopic + "/webui/";
 
   esp_mqtt_client_config_t mc{};
 #if ESP_IDF_VERSION_MAJOR >= 5
@@ -108,6 +109,8 @@ void MqttBridge::handleEvent(MqttBridge *self, esp_mqtt_event_handle_t event) {
       self->needPublishAll_ = true;
       String sub = self->setPrefix_ + "+/set";
       esp_mqtt_client_subscribe(event->client, sub.c_str(), 1);
+      sub = self->webUiTopic_ + "set";
+      esp_mqtt_client_subscribe(event->client, sub.c_str(), 1);
       esp_mqtt_client_publish(event->client, self->statusTopic_.c_str(), "online", 0, 1, 1);
       break;
     }
@@ -118,13 +121,16 @@ void MqttBridge::handleEvent(MqttBridge *self, esp_mqtt_event_handle_t event) {
       // Ignore fragmented (oversized) messages; set payloads are tiny.
       if (event->data_len != event->total_data_len || event->current_data_offset != 0) break;
       String topic(event->topic, event->topic_len);
-      if (!topic.startsWith(self->setPrefix_) || !topic.endsWith("/set")) break;
-      String num = topic.substring(self->setPrefix_.length(), topic.length() - 4);
-      long n = num.toInt();
-      if (n < 1 || n > static_cast<long>(MAX_METERS) || String(n) != num) break;
-
       SetMessage msg{};
-      msg.index = static_cast<uint8_t>(n - 1);
+      if (topic == self->webUiTopic_ + "set") {
+        msg.index = WEBUI_SET;
+      } else {
+        if (!topic.startsWith(self->setPrefix_) || !topic.endsWith("/set")) break;
+        String num = topic.substring(self->setPrefix_.length(), topic.length() - 4);
+        long n = num.toInt();
+        if (n < 1 || n > static_cast<long>(MAX_METERS) || String(n) != num) break;
+        msg.index = static_cast<uint8_t>(n - 1);
+      }
       size_t len = min(static_cast<size_t>(event->data_len), sizeof(msg.payload) - 1);
       memcpy(msg.payload, event->data, len);
       xQueueSend(self->queue_, &msg, 0);
@@ -144,6 +150,11 @@ void MqttBridge::loop() {
   if (connected_ && needPublishAll_) {
     needPublishAll_ = false;
     publishAll();
+    pendingWebUi_ = true;
+  }
+  if (connected_ && pendingWebUi_) {
+    pendingWebUi_ = false;
+    publish(webUiTopic_ + "state", config_->config().webUiEnabled ? "on" : "off", true);
   }
   if (connected_) sendPending();
 }
@@ -164,6 +175,10 @@ void MqttBridge::sendPending() {
 void MqttBridge::handleSet(const SetMessage &msg) {
   String payload(msg.payload);
   payload.trim();
+  if (msg.index == WEBUI_SET) {
+    handleWebUi(payload);
+    return;
+  }
 
   String error;
   if (msg.index >= config_->config().meterCount) {
@@ -196,6 +211,36 @@ void MqttBridge::handleSet(const SetMessage &msg) {
   doc["error"] = error;
   String out; serializeJson(doc, out);
   publish(config_->config().mqttBaseTopic + "/error", out, false);
+}
+
+void MqttBridge::handleWebUi(const String &payload) {
+  String p = payload;
+  p.toLowerCase();
+  int on = -1;
+  if (p.startsWith("{")) {
+    JsonDocument doc;
+    if (!deserializeJson(doc, p) && doc["enabled"].is<bool>()) on = doc["enabled"].as<bool>() ? 1 : 0;
+  } else if (p == "on" || p == "1" || p == "true" || p == "ein") {
+    on = 1;
+  } else if (p == "off" || p == "0" || p == "false" || p == "aus") {
+    on = 0;
+  }
+  if (on < 0) {
+    JsonDocument doc;
+    doc["topic"] = webUiTopic_ + "set";
+    doc["payload"] = payload;
+    doc["error"] = "Erwartet on/off, 1/0, true/false oder {\"enabled\":true}";
+    String out; serializeJson(doc, out);
+    publish(config_->config().mqttBaseTopic + "/error", out, false);
+    return;
+  }
+  AppConfig &cfg = config_->config();
+  if (cfg.webUiEnabled != (on == 1)) {
+    cfg.webUiEnabled = on == 1;
+    config_->save();
+    Serial.printf("Web UI %s (MQTT)\n", on ? "on" : "off");
+  }
+  pendingWebUi_ = true;
 }
 
 void MqttBridge::publish(const String &topic, const String &payload, bool retain) {

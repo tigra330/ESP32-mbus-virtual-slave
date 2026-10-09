@@ -20,12 +20,18 @@ nav a:hover{color:#e5e7eb}nav a.act{color:#fff;border-bottom-color:#3b82f6}
 .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
 .tile{background:#111827;border:1px solid #374151;border-radius:10px;padding:12px}.tile b{display:block;font-size:12px;color:#9ca3af;font-weight:600;margin-bottom:4px}.tile span{font-size:15px;word-break:break-word}
 a{color:#93c5fd}
+#login{position:fixed;inset:0;z-index:20;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;padding:16px}#login.show{display:flex}#login .card{width:100%;max-width:360px}#login label{margin-bottom:10px}
+.ghost{background:#374151;color:#e5e7eb}#target{cursor:pointer}
 input:disabled{opacity:.45;cursor:not-allowed}.tag{display:inline-block;font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;margin-left:8px;vertical-align:middle;background:#374151;color:#cbd5e1}.tag.bad{background:#7f1d1d;color:#fecaca}
 .meter.used h3{color:#9ca3af}input.conflict{border-color:#ef4444}
 </style></head><body>
-<header><div class="bar"><h1>BAScloud M-Bus Virtual Meter</h1><span class="muted small">ESP32 + TSS721 · v0.1</span><span class="sp"></span><button class="primary" onclick="save()">Speichern</button></div>
+<header><div class="bar"><h1>BAScloud M-Bus Virtual Meter</h1><span class="muted small">ESP32 + TSS721 · v0.1</span><span class="sp"></span><span id="target" class="muted small" onclick="showLogin(true)" title="ESP-Adresse ändern"></span><button id="logout" class="ghost" style="display:none" onclick="logout()">Abmelden</button><button class="primary" onclick="save()">Speichern</button></div>
 <nav><a href="#status">Status</a><a href="#zaehler">Zähler</a><a href="#impulse">Impulse</a><a href="#sensor">BME280</a><a href="#mqtt">MQTT</a><a href="#system">System</a></nav>
-<div id="msg" class="small"></div></header><div class="wrap">
+<div id="msg" class="small"></div></header>
+<div id="login"><div class="card"><h2>Anmelden</h2>
+<label id="hostRow">ESP-Adresse<input id="lHost" placeholder="192.168.1.50"></label>
+<label>Benutzer<input id="lUser" autocomplete="username" value="admin"></label><label>Passwort<input id="lPass" type="password" autocomplete="current-password" onkeydown="if(event.key==='Enter')login()"></label>
+<div class="row"><button class="primary" onclick="login()">Anmelden</button><button class="ghost" onclick="hideLogin();location.hash='status'">Abbrechen</button></div><div id="lMsg" class="small"></div></div></div><div class="wrap">
 <section class="page" id="p-status"><div class="card"><h2>Übersicht</h2><div class="tiles">
 <div class="tile"><b>IP-Adresse</b><span id="tIp">…</span></div><div class="tile"><b>WLAN-Modus</b><span id="tMode">…</span></div>
 <div class="tile"><b>M-Bus RX / TX</b><span id="tFrames">…</span></div><div class="tile"><b>MQTT</b><span id="tMqtt">…</span></div>
@@ -64,12 +70,20 @@ Der Zähler meldet seinen Stand zurück auf <code><span class="bt"></span>/meter
 <label>WLAN SSID<input id="wifiSsid"></label><label>WLAN Passwort<input id="wifiPassword" type="password" placeholder="leer = unverändert"></label></div>
 <div class="muted small" style="margin-top:10px">Ohne Verbindung startet der ESP32 einen eigenen Access Point (BAScloud-MBus-…). Änderungen werden nach Neustart aktiv.</div></div>
 <div class="card"><h2>M-Bus Schnittstelle</h2><div class="grid">
-<label>M-Bus Baudrate<select id="mbusBaud"><option>300</option><option>2400</option><option>9600</option></select></label>
-<label>M-Bus Stoppbits<select id="mbusStopBits"><option value="1">1 (8E1, Standard)</option><option value="2">2 (8E2, Workaround)</option></select></label>
-<label>Pause nach jedem Byte (ms, Standard 10, 0 = normgerecht)<input id="mbusByteGapMs" type="number" min="0" max="20"></label>
+<label>Baudrate<select id="mbusBaud"><option>300</option><option>2400</option><option>9600</option></select></label>
+<label>Stoppbits<select id="mbusStopBits"><option value="1">1 (8E1, Standard)</option><option value="2">2 (8E2, Workaround)</option></select></label>
+<label>Byte-Pause (ms)<input id="mbusByteGapMs" type="number" min="0" max="20"></label>
 <label>UART RX GPIO<input id="mbusRxPin" type="number"></label><label>UART TX GPIO<input id="mbusTxPin" type="number"></label></div>
-<div class="muted small" style="margin-top:10px">Änderungen an der UART werden nach Neustart aktiv.</div></div>
+<div class="muted small" style="margin-top:10px">Byte-Pause: Pause nach jedem gesendeten Byte, Standard 10 ms, 0 = normgerecht. Änderungen an der UART werden nach Neustart aktiv.</div></div>
 <div class="card"><h2>Firmware-Update</h2><div class="muted small">firmware.bin aus .pio/build/esp32dev/ hochladen. Konfiguration und Zählerstände bleiben erhalten.</div><div class="row" style="margin-top:10px;flex-wrap:nowrap"><input id="fw" type="file" accept=".bin"><button class="primary" onclick="ota()">Hochladen</button></div><div id="otaMsg" class="small"></div></div>
+<div class="card"><h2>Anmeldung</h2><div class="grid">
+<label>Anmeldung aktiv<select id="authEnabled"><option value="1">Ja</option><option value="0">Nein</option></select></label>
+<label>Benutzer<input id="authUser" placeholder="admin"></label><label>Passwort<input id="authPassword" type="password" autocomplete="new-password" placeholder="leer = unverändert"></label></div>
+<div class="muted small" style="margin-top:10px">Schützt alle Seiten außer Status, die REST-API und das Firmware-Update (HTTP Basic-Auth). Passwort vergessen: BOOT-Taste am ESP32 im Betrieb 5 s gedrückt halten, dann ist die Anmeldung aus.</div></div>
+<div class="card"><h2>Weboberfläche extern nutzen</h2><div class="muted small">Die Weboberfläche kann auch ohne den ESP32 als Webserver laufen, z. B. als lokale Datei oder von einem anderen Server im LAN. Sie fragt dann nach der ESP-Adresse, alternativ <code>?esp=192.168.1.50</code> an die URL hängen. Nur über http, nicht https.</div>
+<div class="grid" style="margin-top:10px;align-items:end"><label>Lokale Weboberfläche auf dem ESP32<select id="webUiEnabled"><option value="1">Ein</option><option value="0">Aus (nur REST-API)</option></select></label>
+<div><a id="dl" href="/" download="mbus-weboberflaeche.html"><button class="ghost">Weboberfläche herunterladen</button></a></div></div>
+<div class="muted small" style="margin-top:10px">Aus: Der ESP32 liefert diese Seite und die API-Doku nicht mehr aus, REST-API und MQTT laufen weiter. Vorher die Weboberfläche herunterladen. Wieder einschalten: hier in der externen Weboberfläche, per REST <code>PUT /api/webui</code> mit <code>{"enabled":true}</code>, per MQTT <code><span class="bt"></span>/webui/set</code> = <code>on</code> oder BOOT-Taste 5 s halten.</div></div>
 <div class="card"><h2>Neustart</h2><div class="row"><button onclick="restart()">ESP32 neu starten</button></div></div>
 <div class="card"><h2>REST-API</h2><div class="muted small">
 <code>GET /api/meters</code> – alle Zähler abfragen · <code>GET /api/meters/&lt;n&gt;</code> – einen Zähler abfragen<br>
@@ -83,7 +97,31 @@ let cfg={meters:[]};
 // '2b' = electricity, bidirectional (medium 2 + bidirectional flag)
 const media=[['0','Other'],['2','Strom'],['2b','Strom 2-Richtung'],['3','Gas'],['4','Wärme'],['6','Warmwasser'],['7','Wasser'],['22','Kaltwasser']];
 const REGS=[['1.8.1','Bezug Tarif 1'],['1.8.2','Bezug Tarif 2'],['2.8.0','Einspeisung gesamt'],['2.8.1','Einspeisung Tarif 1'],['2.8.2','Einspeisung Tarif 2']];
-async function load(){cfg=await (await fetch('/api/config')).json();for(const k of ['wifiSsid','mbusBaud','mbusStopBits','mbusByteGapMs','mbusRxPin','mbusTxPin','meterCount','mqttHost','mqttPort','mqttUser','mqttBaseTopic']) document.getElementById(k).value=cfg[k]??'';document.getElementById('mqttEnabled').value=cfg.mqttEnabled?'1':'0';
+// Requests go to API (empty = the ESP serving this page). Outside the ESP (local file, ?esp=, other
+// server) the address is asked for and remembered. Login: Basic auth header, kept for the session.
+const Q=new URLSearchParams(location.search),EXT=location.protocol==='file:'||Q.has('esp');
+let API='',AUTH='',authOn=false,authed=false;
+function host(h){h=(h||'').trim().replace(/\/+$/,'');return h&&!/^https?:\/\//.test(h)?'http://'+h:h;}
+try{API=host(Q.get('esp')||(EXT?localStorage.getItem('espHost'):''));AUTH=sessionStorage.getItem('auth')||'';}catch(e){}
+function basic(u,p){return 'Basic '+btoa(unescape(encodeURIComponent(u+':'+p)));}
+async function api(path,opt={}){if(AUTH)opt.headers=Object.assign({},opt.headers,{Authorization:AUTH});
+let r=await fetch(API+path,opt);if(r.status===401){authed=false;showLogin();throw new Error('Anmeldung erforderlich');}return r;}
+function isOpen(){return (location.hash.slice(1)||'status')==='status';}
+function showLogin(force){if(!force&&isOpen())return;document.getElementById('hostRow').style.display=EXT?'':'none';document.getElementById('lHost').value=API.replace(/^http:\/\//,'');
+document.getElementById('lMsg').textContent='';document.getElementById('login').classList.add('show');(EXT&&!API?document.getElementById('lHost'):document.getElementById('lPass')).focus();}
+function hideLogin(){document.getElementById('login').classList.remove('show');}
+async function login(){let m=document.getElementById('lMsg');if(EXT){API=host(document.getElementById('lHost').value);try{localStorage.setItem('espHost',API);}catch(e){}}
+m.className='small';m.textContent='Verbinde...';
+try{authOn=!!(await (await fetch(API+'/api/status')).json()).auth;AUTH=authOn?basic(document.getElementById('lUser').value,document.getElementById('lPass').value):'';
+let r=await fetch(API+'/api/config',{headers:AUTH?{Authorization:AUTH}:{}});if(r.status===401){m.className='small bad';m.textContent='Benutzer oder Passwort falsch';return;}
+if(!r.ok)throw 0;try{sessionStorage.setItem('auth',AUTH);}catch(e){}authed=true;hideLogin();showTarget();await load();stat();}catch(e){m.className='small bad';m.textContent='ESP nicht erreichbar'+(EXT?' (Adresse prüfen)':'');}}
+function logout(){AUTH='';authed=false;try{sessionStorage.removeItem('auth');}catch(e){}location.hash='status';showTarget();}
+function showTarget(){document.getElementById('target').textContent=EXT?'Gerät: '+(API.replace(/^http:\/\//,'')||'–'):'';document.getElementById('logout').style.display=authOn&&authed?'':'none';document.getElementById('dl').href=API+'/';}
+// Loads the configuration once the device is known and the login (if any) is there.
+async function start(){showTarget();if(EXT&&!API){showLogin(true);return;}
+try{let s=await (await fetch(API+'/api/status')).json();authOn=!!s.auth;}catch(e){if(EXT)showLogin(true);return;}
+if(authOn&&!AUTH){route();return;}try{await load();authed=true;showTarget();}catch(e){}}
+async function load(){cfg=await (await api('/api/config')).json();for(const k of ['wifiSsid','authUser','mbusBaud','mbusStopBits','mbusByteGapMs','mbusRxPin','mbusTxPin','meterCount','mqttHost','mqttPort','mqttUser','mqttBaseTopic']) document.getElementById(k).value=cfg[k]??'';document.getElementById('mqttEnabled').value=cfg.mqttEnabled?'1':'0';document.getElementById('authEnabled').value=cfg.authEnabled?'1':'0';document.getElementById('webUiEnabled').value=cfg.webUiEnabled===false?'0':'1';
 let s=cfg.sensor||{};document.getElementById('sEn').value=s.enabled?'1':'0';for(const [id,k] of SENSOR_FIELDS)document.getElementById(id).value=s[k]??'';document.querySelectorAll('.bt').forEach(e=>e.textContent=cfg.mqttBaseTopic||'bascloud/mbus');renderPulses();renderMeters();}
 function renderMeters(){let n=Math.max(1,Math.min(250,+document.getElementById('meterCount').value||1));document.getElementById('meterCount').value=n;
 while(cfg.meters.length<n){let i=cfg.meters.length;cfg.meters.push({enabled:true,name:`Meter ${i+1}`,primaryAddress:i+1,secondaryAddress:10000001+i,manufacturer:'BAS',version:1,medium:7,value:0,unit:'m3',resolutionExp:-3});}cfg.meters=cfg.meters.slice(0,n);
@@ -128,7 +166,7 @@ document.addEventListener('input',e=>{if(/^(pPin|pMeter|sPa|pa)\d*$/.test(e.targ
 async function setStart(i){let p=(cfg.pulses||[])[i],v=document.getElementById('pStart'+i).value,msg=document.getElementById('pSt'+i);msg._until=Date.now()+4000;
 if(!p||!p.enabled){msg.className='small bad';msg.textContent='Impulseingang erst aktivieren und speichern.';return;}
 if(v===''||!(+v>=0)){msg.className='small bad';msg.textContent='Startwert muss eine Zahl >= 0 sein.';return;}
-let r=await fetch('/api/meters/'+p.meter,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:+v})});
+let r=await api('/api/meters/'+p.meter,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({value:+v})});
 if(r.ok){document.getElementById('pStart'+i).value='';msg.className='small ok';msg.textContent='Startwert gesetzt.';}else{msg.className='small bad';try{msg.textContent=(await r.json()).error;}catch(e){msg.textContent='Fehler '+r.status;}}}
 const SENSOR_FIELDS=[['sName','name'],['sPa','primaryAddress'],['sSa','secondaryAddress'],['sMan','manufacturer'],['sVer','version'],['sSda','sdaPin'],['sScl','sclPin'],['sI2c','i2cAddress']];
 function gatherSensor(){let s={enabled:document.getElementById('sEn').value==='1'};for(const [id,k] of SENSOR_FIELDS){let v=document.getElementById(id).value;s[k]=k==='name'?v:k==='manufacturer'?v.toUpperCase():+v;}return s;}
@@ -150,8 +188,8 @@ for(const o of document.getElementById('res'+i).options)o.textContent=`${fmt(Mat
 function esc(s){return String(s||'').replace(/[&<>\"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function gather(){let n=+document.getElementById('meterCount').value;let meters=[];for(let i=0;i<n;i++)meters.push({enabled:document.getElementById('en'+i).value==='1',name:document.getElementById('name'+i).value,primaryAddress:+document.getElementById('pa'+i).value,secondaryAddress:+document.getElementById('sa'+i).value,manufacturer:document.getElementById('man'+i).value.toUpperCase(),version:+document.getElementById('ver'+i).value,medium:document.getElementById('med'+i).value==='2b'?2:+document.getElementById('med'+i).value,bidirectional:document.getElementById('med'+i).value==='2b',value:+document.getElementById('val'+i).value,unit:document.getElementById('unit'+i).value,resolutionExp:+document.getElementById('res'+i).value,flow:+document.getElementById('fl'+i).value,flowTemp:+document.getElementById('ft'+i).value,returnTemp:+document.getElementById('rt'+i).value,...Object.fromEntries(REGS.map((r,k)=>[r[0],+document.getElementById(`reg${k}_${i}`).value]))});
 // Pulse-counted meters: the device keeps its own value.
-meters.forEach((m,i)=>{if(document.getElementById('val'+i).disabled)delete m.value;});return {wifiSsid:document.getElementById('wifiSsid').value,wifiPassword:document.getElementById('wifiPassword').value,mbusBaud:+document.getElementById('mbusBaud').value,mbusStopBits:+document.getElementById('mbusStopBits').value,mbusByteGapMs:document.getElementById('mbusByteGapMs').value===''?10:+document.getElementById('mbusByteGapMs').value,mbusRxPin:+document.getElementById('mbusRxPin').value,mbusTxPin:+document.getElementById('mbusTxPin').value,meterCount:n,meters,mqttEnabled:document.getElementById('mqttEnabled').value==='1',mqttHost:document.getElementById('mqttHost').value,mqttPort:+document.getElementById('mqttPort').value||1883,mqttUser:document.getElementById('mqttUser').value,mqttPassword:document.getElementById('mqttPassword').value,mqttBaseTopic:document.getElementById('mqttBaseTopic').value,sensor:gatherSensor(),pulses:gatherPulses()};}
-function check(c){if(c.sensor.enabled){if(!(c.sensor.primaryAddress>=1&&c.sensor.primaryAddress<=250))return 'BME280: Primäradresse muss zwischen 1 und 250 liegen.';
+meters.forEach((m,i)=>{if(document.getElementById('val'+i).disabled)delete m.value;});return {wifiSsid:document.getElementById('wifiSsid').value,wifiPassword:document.getElementById('wifiPassword').value,authEnabled:document.getElementById('authEnabled').value==='1',authUser:document.getElementById('authUser').value.trim()||'admin',authPassword:document.getElementById('authPassword').value,webUiEnabled:document.getElementById('webUiEnabled').value==='1',mbusBaud:+document.getElementById('mbusBaud').value,mbusStopBits:+document.getElementById('mbusStopBits').value,mbusByteGapMs:document.getElementById('mbusByteGapMs').value===''?10:+document.getElementById('mbusByteGapMs').value,mbusRxPin:+document.getElementById('mbusRxPin').value,mbusTxPin:+document.getElementById('mbusTxPin').value,meterCount:n,meters,mqttEnabled:document.getElementById('mqttEnabled').value==='1',mqttHost:document.getElementById('mqttHost').value,mqttPort:+document.getElementById('mqttPort').value||1883,mqttUser:document.getElementById('mqttUser').value,mqttPassword:document.getElementById('mqttPassword').value,mqttBaseTopic:document.getElementById('mqttBaseTopic').value,sensor:gatherSensor(),pulses:gatherPulses()};}
+function check(c){if(c.authEnabled&&!c.authPassword&&!cfg.authEnabled)return 'Anmeldung: Passwort festlegen.';if(c.sensor.enabled){if(!(c.sensor.primaryAddress>=1&&c.sensor.primaryAddress<=250))return 'BME280: Primäradresse muss zwischen 1 und 250 liegen.';
 let k=c.meters.findIndex(m=>m.enabled&&m.primaryAddress===c.sensor.primaryAddress);if(k>=0)return `BME280: Primäradresse ${c.sensor.primaryAddress} ist schon von Zähler ${k+1} belegt.`;}
 for(let k=0;k<c.pulses.length;k++){let p=c.pulses[k];if(!p.enabled)continue;
 if(!(p.meter>=1&&p.meter<=c.meters.length))return `Impulseingang ${k+1}: Zähler-Nr. muss zwischen 1 und ${c.meters.length} liegen.`;
@@ -161,14 +199,20 @@ for(let i=0;i<c.meters.length;i++){let m=c.meters[i],r=m.value===undefined?0:raw
 if(m.bidirectional)for(const [reg,name] of REGS){let v=m[reg];if(!(v>=0)||rawOf(v,m.resolutionExp)>RAW_MAX)return `Zähler ${i+1}: ${reg} ${name} muss zwischen 0 und ${fmt(maxOf(m.resolutionExp),m.resolutionExp)} kWh liegen.`;}
 if(isHeat(m.medium)){if(!(m.flow>=0&&m.flow<=FLOW_MAX))return `Zähler ${i+1}: Durchfluss muss zwischen 0 und ${fmt(FLOW_MAX,-3)} m³/h liegen.`;
 for(const [t,name] of [[m.flowTemp,'Vorlauftemperatur'],[m.returnTemp,'Rücklauftemperatur']])if(!(t>=TEMP_MIN&&t<=TEMP_MAX))return `Zähler ${i+1}: ${name} muss zwischen ${fmt(TEMP_MIN,-1)} und ${fmt(TEMP_MAX,-1)} °C liegen.`;}if(m.value!==undefined&&(!(m.value>=0)||r>RAW_MAX))return `Zähler ${i+1}: Zählerstand muss zwischen 0 und ${fmt(maxOf(m.resolutionExp),m.resolutionExp)} ${unitName(m.unit)} liegen (Auflösung erhöhen für größere Werte).`;}return '';}
-async function save(){let c=gather(),err=check(c),msg=document.getElementById('msg');if(err){msg.className='small bad';msg.textContent=err;return;}let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});let t=await r.text();document.getElementById('msg').className=r.ok?'small ok':'small bad';document.getElementById('msg').textContent=t;if(r.ok)setTimeout(load,400);}
-async function ota(){let f=document.getElementById('fw').files[0],m=document.getElementById('otaMsg');if(!f){m.className='small bad';m.textContent='Keine Datei gewählt';return;}m.className='small';m.textContent='Upload läuft...';let d=new FormData();d.append('firmware',f);try{let r=await fetch('/api/update',{method:'POST',body:d});m.className=r.ok?'small ok':'small bad';m.textContent=await r.text();}catch(e){m.className='small bad';m.textContent='Verbindung abgebrochen';}}
-async function restart(){await fetch('/api/restart',{method:'POST'});document.getElementById('msg').textContent='Neustart ausgelöst...';}
-async function stat(){try{let s=await (await fetch('/api/status')).json();document.getElementById('status').textContent=`IP: ${s.ip}\nModus: ${s.wifiMode}\nRX Frames: ${s.rxFrames}\nTX Frames: ${s.txFrames}\nLetztes Ereignis: ${s.lastEvent}\nRX: ${s.lastRx}\nTX: ${s.lastTx}\nMQTT: ${s.mqtt}\nBME280: ${s.sensor}`;document.getElementById('sensorStatus').textContent=s.sensor;
+async function save(){if(!authed){showLogin(true);return;}let c=gather(),err=check(c),msg=document.getElementById('msg');if(err){msg.className='small bad';msg.textContent=err;return;}
+if(!EXT&&cfg.webUiEnabled!==false&&!c.webUiEnabled&&!confirm('Lokale Weboberfläche abschalten? Diese Seite ist danach auf dem ESP32 nicht mehr erreichbar, nur noch extern (vorher herunterladen).'))return;
+let r;try{r=await api('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});}catch(e){return;}let t=await r.text();msg.className=r.ok?'small ok':'small bad';msg.textContent=t;
+if(!r.ok)return;
+// Keep the session logged in with the new login data.
+if(c.authEnabled){let old=AUTH?decodeURIComponent(escape(atob(AUTH.slice(6)))):'',pw=c.authPassword||old.slice(old.indexOf(':')+1);AUTH=basic(c.authUser,pw);}else AUTH='';
+try{sessionStorage.setItem('auth',AUTH);}catch(e){}authOn=c.authEnabled;document.getElementById('authPassword').value='';showTarget();setTimeout(load,400);}
+async function ota(){let f=document.getElementById('fw').files[0],m=document.getElementById('otaMsg');if(!f){m.className='small bad';m.textContent='Keine Datei gewählt';return;}m.className='small';m.textContent='Upload läuft...';let d=new FormData();d.append('firmware',f);try{let r=await api('/api/update',{method:'POST',body:d});m.className=r.ok?'small ok':'small bad';m.textContent=await r.text();}catch(e){m.className='small bad';m.textContent='Verbindung abgebrochen';}}
+async function restart(){try{await api('/api/restart',{method:'POST'});}catch(e){return;}document.getElementById('msg').textContent='Neustart ausgelöst...';}
+async function stat(){try{let s=await (await fetch(API+'/api/status')).json();authOn=!!s.auth;document.getElementById('status').textContent=`IP: ${s.ip}\nModus: ${s.wifiMode}\nRX Frames: ${s.rxFrames}\nTX Frames: ${s.txFrames}\nLetztes Ereignis: ${s.lastEvent}\nRX: ${s.lastRx}\nTX: ${s.lastTx}\nMQTT: ${s.mqtt}\nBME280: ${s.sensor}`;document.getElementById('sensorStatus').textContent=s.sensor;
 for(const [id,v] of [['tIp',s.ip],['tMode',s.wifiMode],['tFrames',s.rxFrames+' / '+s.txFrames],['tMqtt',s.mqtt],['tSensor',s.sensor]])document.getElementById(id).textContent=v;
 (s.pulses||[]).forEach((p,i)=>{let el=document.getElementById('pSt'+i);if(!el||Date.now()<(el._until||0))return;el.className='small';
 el.textContent=p.enabled?`Zähler ${p.meter}: Startwert ${+p.startValue.toFixed(6)} + ${p.count} Impulse → Zählerstand ${+p.value.toFixed(6)} ${unitName(p.unit)}`:'deaktiviert';});}catch(e){}}
-async function refreshValues(){try{let list=await (await fetch('/api/values')).json();
+async function refreshValues(){if(!authed)return;try{let list=await (await api('/api/values')).json();
 // Entry per meter: number, or [value, flow, flowTemp, returnTemp] for heat meters.
 // Entry for bidirectional electricity meters: [1.8.0, 1.8.1, 1.8.2, 2.8.0, 2.8.1, 2.8.2].
 const LIVE_HEAT=[['val','value'],['fl','flow'],['ft','flowTemp'],['rt','returnTemp']];
@@ -181,8 +225,9 @@ function setRefresh(sec){clearInterval(refreshTimer);refreshTimer=sec>0?setInter
 function initRefresh(){let sec=2;try{let s=localStorage.getItem('refreshSec');if(s!==null&&[...document.getElementById('refresh').options].some(o=>o.value===s))sec=+s;}catch(e){}
 document.getElementById('refresh').value=sec;setRefresh(sec);}
 function route(){let id=location.hash.slice(1);if(!document.getElementById('p-'+id))id='status';
-document.querySelectorAll('.page').forEach(p=>p.classList.toggle('act',p.id==='p-'+id));document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('act',a.getAttribute('href')==='#'+id));}
+document.querySelectorAll('.page').forEach(p=>p.classList.toggle('act',p.id==='p-'+id));document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('act',a.getAttribute('href')==='#'+id));
+if(id==='status')hideLogin();else if(!authed&&authOn)showLogin();}
 window.addEventListener('hashchange',route);route();
-load();stat();setInterval(stat,1500);initRefresh();
+start();setInterval(()=>{if(API||!EXT)stat();},1500);initRefresh();
 </script></body></html>
 )HTML";

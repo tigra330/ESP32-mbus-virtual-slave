@@ -433,6 +433,10 @@ void ConfigManager::meterToJson(size_t index, JsonObject o) const {
 void ConfigManager::buildJson(JsonDocument &doc, bool includePassword) const {
   doc["wifiSsid"] = cfg_.wifiSsid;
   doc["wifiPassword"] = includePassword ? cfg_.wifiPassword : "";
+  doc["authEnabled"] = cfg_.authEnabled;
+  doc["authUser"] = cfg_.authUser;
+  doc["authPassword"] = includePassword ? cfg_.authPassword : "";
+  doc["webUiEnabled"] = cfg_.webUiEnabled;
   doc["mbusBaud"] = cfg_.mbusBaud;
   doc["mbusStopBits"] = cfg_.mbusStopBits;
   doc["mbusByteGapMs"] = cfg_.mbusByteGapMs;
@@ -517,6 +521,19 @@ bool ConfigManager::fromJson(Stream &json, String &error) {
 bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
   if (!doc["wifiSsid"].isNull()) cfg_.wifiSsid = doc["wifiSsid"].as<String>();
   if (!doc["wifiPassword"].isNull()) cfg_.wifiPassword = doc["wifiPassword"].as<String>();
+  // Blank password = unchanged, the UI never receives the stored one.
+  const bool authEnabled = doc["authEnabled"] | false;
+  const String authPassword = doc["authPassword"] | "";
+  if (authEnabled && authPassword.isEmpty() && cfg_.authPassword.isEmpty()) {
+    error = "Für die Anmeldung muss ein Passwort gesetzt werden";
+    return false;
+  }
+  cfg_.authEnabled = authEnabled;
+  cfg_.webUiEnabled = doc["webUiEnabled"] | true;
+  if (!authPassword.isEmpty()) cfg_.authPassword = authPassword;
+  if (!doc["authUser"].isNull()) cfg_.authUser = doc["authUser"].as<String>();
+  cfg_.authUser.trim();
+  if (cfg_.authUser.isEmpty()) cfg_.authUser = "admin";
   cfg_.mbusBaud = doc["mbusBaud"] | 2400;
   cfg_.mbusStopBits = (doc["mbusStopBits"] | 1) == 2 ? 2 : 1;
   cfg_.mbusByteGapMs = constrain(doc["mbusByteGapMs"] | 10, 0, 20);

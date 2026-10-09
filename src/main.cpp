@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Middlewares.h>
 #include <uri/UriBraces.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
@@ -21,6 +22,7 @@ MqttBridge mqtt;
 Bme280Sensor bme280;
 PulseCounter pulses;
 String wifiModeText = "AP";
+CorsMiddleware cors;
 
 // POST /api/config bodies (~45 KB for 250 meters) are streamed here instead of into RAM:
 // WebServer's "plain" argument needs two large contiguous heap blocks and fails above ~40 KB.
@@ -122,10 +124,88 @@ int meterIndexFromItem(JsonObject item) {
   return -1;
 }
 
+// Reachable without login: the status page and the OpenAPI spec.
+bool isPublic(const String &uri) {
+  return uri == "/" || uri == "/api/status" || uri == "/api/openapi.json";
+}
+
+bool authorized() {
+  const AppConfig &cfg = configManager.config();
+  return !cfg.authEnabled || server.authenticate(cfg.authUser.c_str(), cfg.authPassword.c_str());
+}
+
+// The web UI can also be opened from elsewhere (local file, other server) and talks to the ESP
+// cross-origin, so allow that. Preflight requests are answered before the login check.
+void setupAccess() {
+  const char *headers[] = {"Origin"};
+  server.collectHeaders(headers, 1);
+  cors.setOrigin("*").setMethods("GET, POST, PUT, OPTIONS").setHeaders("Authorization, Content-Type").setAllowCredentials(false);
+  server.addMiddleware(&cors);
+  server.addMiddleware([](WebServer &s, Middleware::Callback next) {
+    if (isPublic(s.uri()) || authorized()) return next();
+    // The docs page is opened directly, so let the browser ask for the login. The web UI handles
+    // 401 itself; a WWW-Authenticate header would pop up the browser's own dialog there.
+    if (s.uri() == "/api/docs") s.requestAuthentication(BASIC_AUTH, "BAScloud M-Bus");
+    else s.send(401, "application/json", "{\"error\":\"Anmeldung erforderlich\"}");
+    return true;
+  });
+}
+
+// Locked out: holding the BOOT button (GPIO 0) for 5 s switches the login off and the local web UI on.
+void checkAuthReset() {
+  static uint32_t since = 0;
+  AppConfig &cfg = configManager.config();
+  for (const PulseInput &p : cfg.pulses) {
+    if (p.enabled && p.pin == 0) return;
+  }
+  if (digitalRead(0) == HIGH) { since = 0; return; }
+  if (since == 0) { since = millis() | 1; return; }
+  if (millis() - since < 5000 || (!cfg.authEnabled && cfg.webUiEnabled)) return;
+  cfg.authEnabled = false;
+  cfg.webUiEnabled = true;
+  configManager.save();
+  mqtt.publishWebUi();
+  Serial.println("Login disabled, web UI enabled (BOOT button)");
+}
+
+// Answer for the HTML pages while the local web UI is switched off.
+void sendWebUiOff() {
+  const String base = configManager.config().mqttBaseTopic;
+  server.send(404, "text/plain; charset=utf-8",
+              "Die lokale Weboberfläche ist abgeschaltet. Die REST-API ist weiter erreichbar.\n\n"
+              "Einschalten:\n"
+              "  REST: PUT /api/webui mit {\"enabled\":true}\n"
+              "  MQTT: " + base + "/webui/set = on\n"
+              "  oder in einer extern geöffneten Weboberfläche unter System.\n");
+}
+
 void setupRestApi() {
   server.on("/api/docs", HTTP_GET, []() {
+    if (!configManager.config().webUiEnabled) return sendWebUiOff();
     server.send_P(200, "text/html; charset=utf-8", API_DOCS_HTML);
   });
+
+  // GET /api/webui -> {"enabled":true}; PUT/POST {"enabled":false} switches the local web UI.
+  server.on("/api/webui", HTTP_GET, []() {
+    JsonDocument doc;
+    doc["enabled"] = configManager.config().webUiEnabled;
+    sendJson(200, doc);
+  });
+  auto setWebUi = []() {
+    JsonDocument in;
+    if (deserializeJson(in, server.arg("plain")) || !in["enabled"].is<bool>()) {
+      return sendJsonError(400, "Erwartet {\"enabled\":true} oder {\"enabled\":false}");
+    }
+    AppConfig &cfg = configManager.config();
+    cfg.webUiEnabled = in["enabled"].as<bool>();
+    if (!configManager.save()) return sendJsonError(500, "Speichern im Flash fehlgeschlagen");
+    mqtt.publishWebUi();
+    JsonDocument doc;
+    doc["enabled"] = cfg.webUiEnabled;
+    sendJson(200, doc);
+  };
+  server.on("/api/webui", HTTP_PUT, setWebUi);
+  server.on("/api/webui", HTTP_POST, setWebUi);
   server.on("/api/openapi.json", HTTP_GET, []() {
     server.send_P(200, "application/json", OPENAPI_JSON);
   });
@@ -228,6 +308,7 @@ void setupRestApi() {
 
 void setupWeb() {
   server.on("/", HTTP_GET, []() {
+    if (!configManager.config().webUiEnabled) return sendWebUiOff();
     server.send_P(200, "text/html; charset=utf-8", INDEX_HTML);
   });
 
@@ -241,8 +322,10 @@ void setupWeb() {
     HTTPRaw &raw = server.raw();
     switch (raw.status) {
       case RAW_START:
-        configUpload = LittleFS.open(CONFIG_UPLOAD, "w");
-        configUploadOk = static_cast<bool>(configUpload);
+        // The body arrives before the middleware runs, so check the login here as well.
+        configUploadOk = authorized();
+        if (configUploadOk) configUpload = LittleFS.open(CONFIG_UPLOAD, "w");
+        configUploadOk = configUploadOk && static_cast<bool>(configUpload);
         break;
       case RAW_WRITE:
         if (configUploadOk && configUpload.write(raw.buf, raw.currentSize) != raw.currentSize) configUploadOk = false;
@@ -266,7 +349,7 @@ void setupWeb() {
       return;
     }
 
-    // Preserve existing passwords if the UI leaves them blank.
+    // Preserve existing passwords if the UI leaves them blank (login password: see fromDoc).
     String oldPass = configManager.config().wifiPassword;
     String oldMqttPass = configManager.config().mqttPassword;
     String error;
@@ -293,6 +376,8 @@ void setupWeb() {
     JsonDocument doc;
     doc["ip"] = currentIp();
     doc["wifiMode"] = wifiModeText;
+    doc["auth"] = configManager.config().authEnabled;
+    doc["webUi"] = configManager.config().webUiEnabled;
     doc["rxFrames"] = mbus.rxFrames();
     doc["txFrames"] = mbus.txFrames();
     doc["lastEvent"] = mbus.lastEvent();
@@ -332,6 +417,7 @@ void setupWeb() {
     ESP.restart();
   }, []() {
     HTTPUpload &up = server.upload();
+    if (!authorized()) return;  // body arrives before the middleware's login check
     switch (up.status) {
       case UPLOAD_FILE_START:
         Serial.printf("OTA: %s\n", up.filename.c_str());
@@ -351,6 +437,7 @@ void setupWeb() {
     }
   });
 
+  setupAccess();
   setupRestApi();
   server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
   server.begin();
@@ -365,6 +452,7 @@ void setup() {
     Serial.println("Config storage initialization failed");
   }
 
+  pinMode(0, INPUT_PULLUP);
   startWifi();
   setupWeb();
   bme280.begin(&configManager.config().sensor);
@@ -386,5 +474,6 @@ void loop() {
   pulses.loop();
   mqtt.loop();
   configManager.loop();
+  checkAuthReset();
   delay(1);
 }

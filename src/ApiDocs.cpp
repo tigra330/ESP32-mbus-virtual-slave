@@ -21,7 +21,7 @@ Zählerstände können per <b>REST-API</b> oder <b>MQTT</b> gesetzt werden und s
 Gespeichert im Flash werden sie nach 10 s ohne weitere Änderung, spätestens nach 60 s.<br><br>
 <b>Zählernummer <code>n</code></b> = Nummer des Zählers in der Weboberfläche (1 … Anzahl Zähler), nicht die M-Bus-Primäradresse.<br>
 <b>Wertebereich:</b> 0 … <code>maxValue</code>. Der Maximalwert hängt von der Auflösung des Zählers ab (32 Bit, z. B. 4.294.967,295 m³ bei 0,001). Der Wert wird auf die Auflösung gerundet.<br>
-<b>Authentifizierung:</b> keine – jeder im Netz kann Werte setzen.
+<b>Authentifizierung:</b> HTTP Basic-Auth, sobald sie in der Weboberfläche unter System → Anmeldung aktiviert ist (z. B. <code>curl -u admin:passwort …</code>). Ohne Anmeldung erreichbar sind nur <code>/api/status</code> und <code>/api/openapi.json</code>. Diese Seite nutzt die Anmeldung des Browsers.
 </div></div>
 
 <div class="card"><h2>Zähler-Objekt</h2><div class="small">So wird ein Zähler in allen REST-Antworten und in der MQTT-<code>state</code>-Nachricht dargestellt:</div>
@@ -80,6 +80,11 @@ Body: Array oder <code>{"meters":[…]}</code>. Zuerst werden alle Einträge gep
 
 <div class="ep"><h3><span class="m get">GET</span><code>/api/status</code></h3><div class="small">Gerätestatus: IP, WLAN-Modus, M-Bus-Zähler und letzte Telegramme, MQTT-Status, BME280-Messwerte.</div>
 <div class="row"><button onclick="call('GET','/api/status',null,'r5')">Ausprobieren</button></div><div id="r5" class="res"></div></div>
+
+<div class="ep"><h3><span class="m put">PUT</span><code>/api/webui</code></h3><div class="small">Schaltet die lokale Weboberfläche (Konfigurationsseite und diese Doku) ein oder aus. REST-API und MQTT laufen immer weiter. <code>GET /api/webui</code> liefert den aktuellen Zustand.</div>
+<pre>curl -X PUT http://<span class="host"></span>/api/webui -d '{"enabled":true}'</pre>
+<textarea id="b6">{"enabled":true}</textarea>
+<div class="row"><button onclick="call('PUT','/api/webui',v('b6'),'r6')">Ausprobieren</button></div><div id="r6" class="res"></div></div>
 </div>
 
 <div class="card"><h2>MQTT</h2><div class="small">Broker und Basis-Topic werden in der <a href="/">Weboberfläche</a> eingestellt.
@@ -88,7 +93,9 @@ Aktuelles Basis-Topic: <code class="bt"></code> · Status: <span id="mq">…</sp
 <tr><td><code><span class="bt"></span>/meter/&lt;n&gt;/set</code></td><td>an das Gerät</td><td>Zählerstand setzen: <code>123.456</code> oder <code>{"value":123.456}</code>, Dezimalkomma wird akzeptiert. Wärmezähler zusätzlich per JSON: <code>{"flow":1.25,"flowTemp":70.5,"returnTemp":50.2}</code>, Strom 2-Richtung: <code>{"1.8.0":1000,"2.8.0":250}</code> (beliebig kombinierbar)</td></tr>
 <tr><td><code><span class="bt"></span>/meter/&lt;n&gt;/state</code></td><td>vom Gerät</td><td>Zähler-Objekt als JSON, retained. Wird nach jeder Änderung (MQTT oder REST) und beim Verbinden gesendet.</td></tr>
 <tr><td><code><span class="bt"></span>/error</code></td><td>vom Gerät</td><td>abgelehnte Werte: <code>{"index":1,"payload":"abc","error":"…"}</code></td></tr>
-<tr><td><code><span class="bt"></span>/status</code></td><td>vom Gerät</td><td><code>online</code> / <code>offline</code>, retained, Last Will</td></tr></table>
+<tr><td><code><span class="bt"></span>/status</code></td><td>vom Gerät</td><td><code>online</code> / <code>offline</code>, retained, Last Will</td></tr>
+<tr><td><code><span class="bt"></span>/webui/set</code></td><td>an das Gerät</td><td>lokale Weboberfläche ein/aus: <code>on</code>/<code>off</code>, <code>1</code>/<code>0</code>, <code>true</code>/<code>false</code> oder <code>{"enabled":true}</code></td></tr>
+<tr><td><code><span class="bt"></span>/webui/state</code></td><td>vom Gerät</td><td><code>on</code> / <code>off</code>, retained</td></tr></table>
 <pre>mosquitto_pub -h &lt;broker&gt; -t <span class="bt"></span>/meter/1/set -m 123.456
 mosquitto_sub -h &lt;broker&gt; -t '<span class="bt"></span>/#' -v</pre>
 <div class="small muted">Hinweis: Wird <code>set</code> mit Retain veröffentlicht, setzt der Broker diesen Wert nach jedem Neuverbinden erneut und überschreibt ggf. neuere Werte aus der REST-API.</div></div>
@@ -108,7 +115,8 @@ fetch('/api/status').then(r=>r.json()).then(s=>document.getElementById('mq').tex
 
 const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "openapi":"3.0.3",
-"info":{"title":"BAScloud M-Bus Virtual Meter API","version":"0.1","description":"Zählerstände der virtuellen M-Bus-Zähler abfragen und setzen. n = Zählernummer aus der Weboberfläche (1 ... Anzahl Zähler)."},
+"info":{"title":"BAScloud M-Bus Virtual Meter API","version":"0.1","description":"Zählerstände der virtuellen M-Bus-Zähler abfragen und setzen. n = Zählernummer aus der Weboberfläche (1 ... Anzahl Zähler). Basic-Auth, sobald in der Weboberfläche aktiviert; /api/status ist immer offen."},
+"security":[{"basicAuth":[]}],
 "paths":{
 "/api/meters":{
 "get":{"summary":"Alle Zähler","responses":{"200":{"description":"Liste der Zähler","content":{"application/json":{"schema":{"type":"array","items":{"$ref":"#/components/schemas/Meter"}}}}}}},
@@ -121,11 +129,17 @@ const char OPENAPI_JSON[] PROGMEM = R"JSON({
 "get":{"summary":"Ein Zähler","responses":{"200":{"description":"Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"404":{"$ref":"#/components/responses/Error"}}},
 "put":{"summary":"Zählerstand setzen","description":"Mindestens ein Feld angeben. flow/flowTemp/returnTemp nur bei Wärmezählern, 1.8.1 ... 2.8.2 nur bei Strom 2-Richtung.","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Update"},"example":{"value":123.456}}}},
 "responses":{"200":{"description":"Geänderter Zähler","content":{"application/json":{"schema":{"$ref":"#/components/schemas/Meter"}}}},"400":{"$ref":"#/components/responses/Error"},"404":{"$ref":"#/components/responses/Error"}}}},
+"/api/webui":{
+"get":{"summary":"Lokale Weboberfläche: Zustand","responses":{"200":{"description":"Zustand","content":{"application/json":{"schema":{"$ref":"#/components/schemas/WebUi"}}}}}},
+"put":{"summary":"Lokale Weboberfläche ein-/ausschalten","description":"Aus: der ESP32 liefert / und /api/docs nicht mehr aus, REST-API und MQTT laufen weiter.","requestBody":{"required":true,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/WebUi"},"example":{"enabled":true}}}},
+"responses":{"200":{"description":"Neuer Zustand","content":{"application/json":{"schema":{"$ref":"#/components/schemas/WebUi"}}}},"400":{"$ref":"#/components/responses/Error"}}}},
 "/api/status":{
-"get":{"summary":"Gerätestatus","responses":{"200":{"description":"Status","content":{"application/json":{"schema":{"type":"object","properties":{"ip":{"type":"string"},"wifiMode":{"type":"string"},"rxFrames":{"type":"integer"},"txFrames":{"type":"integer"},"lastEvent":{"type":"string"},"lastRx":{"type":"string"},"lastTx":{"type":"string"},"mqtt":{"type":"string"},"sensor":{"type":"string","description":"BME280: Messwerte oder Fehlertext"}}}}}}}}}
+"get":{"summary":"Gerätestatus","security":[],"responses":{"200":{"description":"Status","content":{"application/json":{"schema":{"type":"object","properties":{"ip":{"type":"string"},"wifiMode":{"type":"string"},"auth":{"type":"boolean","description":"Anmeldung aktiv"},"webUi":{"type":"boolean","description":"lokale Weboberfläche aktiv"},"rxFrames":{"type":"integer"},"txFrames":{"type":"integer"},"lastEvent":{"type":"string"},"lastRx":{"type":"string"},"lastTx":{"type":"string"},"mqtt":{"type":"string"},"sensor":{"type":"string","description":"BME280: Messwerte oder Fehlertext"}}}}}}}}}
 },
 "components":{
+"securitySchemes":{"basicAuth":{"type":"http","scheme":"basic"}},
 "schemas":{
+"WebUi":{"type":"object","properties":{"enabled":{"type":"boolean"}},"required":["enabled"]},
 "Meter":{"type":"object","properties":{
 "index":{"type":"integer","description":"Zählernummer"},
 "enabled":{"type":"boolean"},
