@@ -20,8 +20,9 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - optionaler BME280-Sensor (Temperatur, Luftfeuchte, Luftdruck) als eigener M-Bus-Slave mit einstellbarer Primäradresse
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
-- Weboberfläche zur Konfiguration
-- Konfiguration persistent im ESP32-Flash (LittleFS, Zählerstände im NVS)
+- Weboberfläche zur Konfiguration mit Menü (Status, Zähler, Impulse, BME280, MQTT, System)
+- Firmware-Update über die Weboberfläche (OTA)
+- Konfiguration und Zählerstände persistent im ESP32-Flash (LittleFS)
 - WLAN-Client; bei fehlender/fehlerhafter WLAN-Konfiguration startet ein Access Point
 - M-Bus-Monitor im Browser mit letztem RX-/TX-Telegramm
 - M-Bus UART standardmäßig 2400 Baud, 8E1
@@ -65,9 +66,9 @@ Ein BME280 kann per I²C angeschlossen werden. Er erscheint auf dem M-Bus als ei
 | SDO | GND → I²C-Adresse `0x76`, VCC → `0x77` |
 | CSB | VCC (I²C-Modus; bei den meisten Breakout-Boards schon so beschaltet) |
 
-**Einstellungen** in der Karte **BME280-Sensor**: aktiv, Name, Primäradresse (1–250), Sekundäradresse, Manufacturer, Version, SDA/SCL-Pin, I²C-Adresse. Die Primäradresse darf nicht von einem aktiven Zähler belegt sein, sonst wird das Speichern abgelehnt. Aktivieren und Änderungen an den I²C-Pins werden nach einem Neustart wirksam. Standard ist deaktiviert, Primäradresse 250, Sekundäradresse 20000001.
+**Einstellungen** auf der Seite **BME280**: aktiv, Name, Primäradresse (1–250), Sekundäradresse, Manufacturer, Version, SDA/SCL-Pin, I²C-Adresse. Die Primäradresse darf nicht von einem aktiven Zähler belegt sein, sonst wird das Speichern abgelehnt. Aktivieren und Änderungen an den I²C-Pins werden nach einem Neustart wirksam. Standard ist deaktiviert, Primäradresse 250, Sekundäradresse 20000001.
 
-Der ESP32 liest den Sensor alle 2 s aus und beantwortet M-Bus-Abfragen aus diesen Werten. Ein fehlender Sensor wird alle 10 s erneut gesucht. Die aktuellen Messwerte stehen in der Sensor-Karte, im M-Bus-Monitor und unter `GET /api/status` (`sensor`).
+Der ESP32 liest den Sensor alle 2 s aus und beantwortet M-Bus-Abfragen aus diesen Werten. Ein fehlender Sensor wird alle 10 s erneut gesucht. Die aktuellen Messwerte stehen auf der Seite BME280, im M-Bus-Monitor und unter `GET /api/status` (`sensor`).
 
 **M-Bus-Telegramm:** Medium `0x1B` (Raumsensor), drei Datensätze:
 
@@ -112,7 +113,7 @@ Zählerstand = Startwert + Impulse × Faktor
 
 S0-Ausgang: S0+ an den GPIO, S0− an GND. GPIO 34–39 haben keinen internen Pull-up und brauchen einen externen Widerstand (z. B. 10 kΩ nach 3,3 V). Nie mehr als 3,3 V an einen GPIO legen.
 
-**Einstellungen** in der Karte **Impulseingänge**:
+**Einstellungen** auf der Seite **Impulse**:
 
 | Feld | Standard | Beschreibung |
 |---|---|---|
@@ -171,7 +172,25 @@ Falls du ein anderes ESP32-Board nutzt, ändere `board` in `platformio.ini`.
 
 Die Firmware baut mit Arduino-ESP32 2.x (ESP-IDF 4.4) und 3.x (ESP-IDF 5.x). Die unterschiedliche esp-mqtt-API wird per `ESP_IDF_VERSION_MAJOR` umgeschaltet.
 
-Die Konfiguration liegt auf LittleFS in der `spiffs`-Partition der Standard-Partitionstabelle. Eine eigene Partitionstabelle muss diese Partition ebenfalls enthalten.
+Das Projekt nutzt eine eigene Partitionstabelle [partitions.csv](partitions.csv) (4 MB Flash), eingetragen in `platformio.ini` mit `board_build.partitions = partitions.csv`:
+
+| Partition | Größe | Inhalt |
+|---|---|---|
+| `app0` / `app1` | je 1,75 MB | zwei Firmware-Slots für OTA-Updates |
+| `spiffs` | 384 KB | LittleFS: Konfiguration, Zählerstände, Impulse |
+| `nvs`, `otadata`, `coredump` | | wie Standard |
+
+Die Firmware belegt etwa 1,25 MB, also rund 70 % eines Slots. Die Standard-Partitionstabelle hat nur 1,25 MB pro Slot und reicht dafür nicht mehr.
+
+**Umstieg von der Standard-Partitionstabelle:** Die neue Tabelle muss einmal per USB geflasht werden, per OTA geht das nicht. Die LittleFS-Partition liegt danach an einer anderen Adresse und wird beim ersten Start neu formatiert, Konfiguration und Zählerstände gehen dabei verloren. Vorher sichern und danach wieder einspielen:
+
+```bash
+curl http://<ip>/api/config -o config.json
+# ... per USB flashen, danach startet der Access Point BAScloud-MBus-XXXX, mit ihm verbinden ...
+curl -X POST http://192.168.4.1/api/config -H 'Content-Type: application/json' --data-binary @config.json
+```
+
+WLAN- und MQTT-Passwort sind im Export nicht enthalten und müssen neu eingegeben werden.
 
 Kompilieren:
 
@@ -184,6 +203,8 @@ Flashen:
 ```bash
 pio run -t upload
 ```
+
+Nach dem ersten USB-Flashen geht jedes weitere Update auch über das Netzwerk, siehe [Firmware-Update (OTA)](#firmware-update-ota).
 
 Serieller Monitor:
 
@@ -205,7 +226,45 @@ Danach im Browser öffnen:
 http://192.168.4.1
 ```
 
-SSID/Passwort und die virtuellen Zähler konfigurieren, speichern und den ESP32 neu starten.
+Unter **System** SSID und Passwort eintragen, unter **Zähler** die virtuellen Zähler einrichten, **Speichern** drücken und den ESP32 unter **System → Neustart** neu starten.
+
+## Weboberfläche
+
+Die Weboberfläche ist über ein Menü in Seiten gegliedert. Kopfzeile und Menü bleiben beim Scrollen oben stehen.
+
+| Seite | Inhalt |
+|---|---|
+| **Status** | Übersicht (IP, WLAN-Modus, M-Bus RX/TX, MQTT, BME280) und M-Bus-Monitor mit letztem RX-/TX-Telegramm |
+| **Zähler** | automatische Aktualisierung der Zählerstände, Anzahl der Zähler, alle virtuellen Zähler |
+| **Impulse** | die 6 Impulseingänge, siehe [Impulseingänge](#impulseingänge) |
+| **BME280** | Sensor-Einstellungen und Messwerte, siehe [BME280-Sensor](#bme280-sensor) |
+| **MQTT** | Broker und Topics, siehe [MQTT](#mqtt) |
+| **System** | WLAN, M-Bus-Schnittstelle, Firmware-Update, Neustart, REST-API-Kurzreferenz |
+
+**Speichern** in der Kopfzeile speichert die komplette Konfiguration aller Seiten auf einmal. Meldungen und Fehler, z. B. bei ungültigen Werten, erscheinen direkt darunter. Die gewählte Seite steht in der Adresse (`#status`, `#zaehler`, `#impulse`, `#sensor`, `#mqtt`, `#system`) und bleibt beim Neuladen erhalten.
+
+Auf der Seite **Zähler** sind Zähler markiert, die eine andere Funktion nutzt:
+
+- **Impulseingang:** graue Kennzeichnung „Impulseingang n · GPIO x“, das Feld Zählerstand ist gesperrt. Primäradresse, Medium, Einheit usw. bleiben einstellbar.
+- **BME280:** Hat ein aktiver Zähler dieselbe Primäradresse wie der BME280, werden Zähler und Adressfeld rot markiert. Speichern wird in diesem Fall abgelehnt.
+
+Die Markierungen folgen den aktuellen Eingaben, auch vor dem Speichern.
+
+## Firmware-Update (OTA)
+
+Neue Firmware kann über das Netzwerk eingespielt werden. Konfiguration und Zählerstände bleiben dabei erhalten.
+
+1. Firmware bauen: `pio run`
+2. In der Weboberfläche unter **System → Firmware-Update** die Datei `.pio/build/esp32dev/firmware.bin` auswählen und **Hochladen** drücken.
+3. Nach erfolgreichem Upload startet der ESP32 automatisch neu.
+
+Oder per Kommandozeile:
+
+```bash
+curl -F "firmware=@.pio/build/esp32dev/firmware.bin" http://<ip>/api/update
+```
+
+Die neue Firmware wird in den gerade nicht aktiven App-Slot geschrieben. Schlägt der Upload fehl oder wird er abgebrochen, läuft die bisherige Firmware unverändert weiter. Nur `firmware.bin` hochladen, nicht `firmware.factory.bin`.
 
 ## M-Bus Beispiel
 
@@ -294,7 +353,7 @@ Beispiel (Auflösung 1 kWh): 1.8.0 = 1000, 1.8.1 = 600, 1.8.2 = 400, 2.8.0 = 250
 
 ## MQTT
 
-MQTT wird in der Weboberfläche in der Karte **MQTT** eingerichtet:
+MQTT wird in der Weboberfläche auf der Seite **MQTT** eingerichtet:
 
 | Feld | Standard | Beschreibung |
 |---|---|---|
@@ -355,6 +414,10 @@ Alle Antworten sind JSON. Ein Zähler wird genauso dargestellt wie in der MQTT-`
 | PUT | `/api/meters/<n>` | `{"value":123.456}`, bei Wärmezählern zusätzlich `flow`, `flowTemp`, `returnTemp`, bei Strom 2-Richtung `1.8.0` … `2.8.2` | Werte setzen (mindestens ein Feld) |
 | PUT | `/api/meters` | `[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]` oder `{"meters":[...]}` | mehrere Zähler setzen |
 | GET | `/api/status` | – | M-Bus-Monitor, MQTT- und BME280-Status, bei Impulseingängen `pulses`: pro Eingang `enabled`, `meter`, `startValue`, `count`, `value`, `unit` |
+| GET | `/api/config` | – | komplette Konfiguration (ohne Passwörter) |
+| POST | `/api/config` | Konfiguration als JSON | komplette Konfiguration speichern, leere Passwörter bleiben unverändert |
+| POST | `/api/update` | `multipart/form-data` mit `firmware.bin` | Firmware-Update, danach Neustart, siehe [OTA](#firmware-update-ota) |
+| POST | `/api/restart` | – | ESP32 neu starten |
 
 Beim Setzen mehrerer Zähler kann jeder Eintrag über `index` (Zählernummer) oder `primaryAddress` angesprochen werden. Zuerst werden alle Einträge geprüft. Ist einer ungültig, wird nichts übernommen.
 
@@ -375,7 +438,7 @@ Jede Änderung per REST wird zusätzlich als MQTT-`state` veröffentlicht.
 
 `value` auf einem Zähler, den ein Impulseingang zählt, setzt dessen Startwert: Der Zählerstand übernimmt den Wert und die Impulse beginnen wieder bei 0.
 
-**Sicherheit:** Die REST-API hat wie die Weboberfläche keine Authentifizierung. Jeder im Netz kann Werte setzen.
+**Sicherheit:** Die REST-API hat wie die Weboberfläche keine Authentifizierung. Jeder im Netz kann Werte setzen, die Konfiguration ändern und über `/api/update` eine andere Firmware einspielen. Das Gerät deshalb nur in einem vertrauenswürdigen Netz betreiben.
 
 ## Speicherung
 
@@ -391,9 +454,9 @@ Startwert und Impulszahl der **Impulseingänge** liegen in `/pulses.bin` und wer
 
 Ältere Firmware hat die Werte im NVS gespeichert. Sie werden beim ersten Start automatisch übernommen (serielle Ausgabe: `Meter values migrated from NVS to LittleFS`).
 
-Die Weboberfläche lädt die Zählerstände automatisch neu, sodass Änderungen per MQTT oder REST direkt sichtbar sind. Ein Feld, das gerade bearbeitet wird, wird dabei nicht überschrieben und bleibt gelb markiert, bis gespeichert wird. Das Intervall wird oben auf der Seite unter der Überschrift eingestellt (Aus, 1 … 60 s, Standard 2 s) und im Browser gespeichert.
+Die Weboberfläche lädt die Zählerstände automatisch neu, sodass Änderungen per MQTT oder REST direkt sichtbar sind. Ein Feld, das gerade bearbeitet wird, wird dabei nicht überschrieben und bleibt gelb markiert, bis gespeichert wird. Das Intervall wird auf der Seite **Zähler** eingestellt (Aus, 1 … 60 s, Standard 2 s) und im Browser gespeichert.
 
-**Hinweis:** „Speichern“ in der Weboberfläche überträgt alle angezeigten Zählerstände. Ein gelb markiertes (bearbeitetes) Feld überschreibt dabei einen Wert, der zwischenzeitlich per MQTT oder REST gesetzt wurde. Ausgenommen sind Zähler, die ein Impulseingang zählt: Ihr Feld ist gesperrt und ihr Stand wird beim Speichern nicht übertragen, damit gezählte Impulse nicht verloren gehen.
+**Hinweis:** „Speichern“ in der Weboberfläche überträgt alle angezeigten Zählerstände. Ein gelb markiertes (bearbeitetes) Feld überschreibt dabei einen Wert, der zwischenzeitlich per MQTT oder REST gesetzt wurde. Ausgenommen sind Zähler, die ein Impulseingang zählt: Ihr Feld ist gesperrt (auch schon vor dem Speichern, sobald der Eingang auf der Seite Impulse aktiviert ist) und ihr Stand wird beim Speichern nicht übertragen, damit gezählte Impulse nicht verloren gehen.
 
 ## Broadcast
 
