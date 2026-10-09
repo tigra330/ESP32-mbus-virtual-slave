@@ -4,6 +4,7 @@
 #include <uri/UriBraces.h>
 #include <ArduinoJson.h>
 #include <LittleFS.h>
+#include <Update.h>
 #include "ConfigManager.h"
 #include "MBusSlave.h"
 #include "MqttBridge.h"
@@ -319,6 +320,35 @@ void setupWeb() {
     server.send(200, "text/plain", "Restarting");
     delay(100);
     ESP.restart();
+  });
+
+  // OTA: firmware.bin as multipart upload, written straight into the inactive app slot.
+  server.on("/api/update", HTTP_POST, []() {
+    bool ok = !Update.hasError() && Update.isFinished();
+    server.send(ok ? 200 : 500, "text/plain",
+                ok ? "Update erfolgreich, Neustart..." : String("Update fehlgeschlagen: ") + Update.errorString());
+    if (!ok) return;
+    delay(300);
+    ESP.restart();
+  }, []() {
+    HTTPUpload &up = server.upload();
+    switch (up.status) {
+      case UPLOAD_FILE_START:
+        Serial.printf("OTA: %s\n", up.filename.c_str());
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) Update.printError(Serial);
+        break;
+      case UPLOAD_FILE_WRITE:
+        if (!Update.hasError() && Update.write(up.buf, up.currentSize) != up.currentSize) Update.printError(Serial);
+        break;
+      case UPLOAD_FILE_END:
+        if (!Update.end(true)) Update.printError(Serial);
+        else Serial.printf("OTA: %u Bytes geschrieben\n", static_cast<unsigned>(up.totalSize));
+        break;
+      case UPLOAD_FILE_ABORTED:
+        Update.abort();
+        Serial.println("OTA abgebrochen");
+        break;
+    }
   });
 
   setupRestApi();

@@ -52,7 +52,9 @@ struct SensorConfig {
 // Pulse input (reed contact, S0 output) that counts one virtual meter.
 // Meter value = startValue + count * factor. Setting the meter value (web UI, REST, MQTT)
 // starts counting again from that value.
-static constexpr size_t PULSE_INPUTS = 2;
+static constexpr size_t PULSE_INPUTS = 6;
+// Default GPIOs: internal pull-up, no strapping pins, not M-Bus UART (16/17) or I2C (21/22).
+static constexpr int PULSE_DEFAULT_PINS[PULSE_INPUTS] = {32, 33, 25, 26, 27, 14};
 
 struct PulseInput {
   bool enabled = false;

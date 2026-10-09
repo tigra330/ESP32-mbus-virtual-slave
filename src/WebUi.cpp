@@ -3,25 +3,45 @@
 const char INDEX_HTML[] PROGMEM = R"HTML(
 <!doctype html><html lang="de"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>BAScloud M-Bus Virtual Meter</title><style>
-body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}.wrap{max-width:1100px;margin:auto;padding:20px}
-h1{margin:0 0 6px}.muted{color:#9ca3af}.card{background:#1f2937;border:1px solid #374151;border-radius:12px;padding:16px;margin:14px 0}
+body{font-family:system-ui,sans-serif;background:#111827;color:#e5e7eb;margin:0}.wrap{max-width:1100px;margin:auto;padding:0 16px 20px}
+h1{margin:0;font-size:18px}h2{margin-top:0}.muted{color:#9ca3af}.card{background:#1f2937;border:1px solid #374151;border-radius:12px;padding:16px;margin:14px 0}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px}label{display:block;font-size:13px;color:#cbd5e1}
 input,select{width:100%;box-sizing:border-box;margin-top:4px;padding:9px;border-radius:7px;border:1px solid #4b5563;background:#111827;color:#fff}
 button{border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:pointer}.primary{background:#3b82f6;color:white}.danger{background:#991b1b;color:white}
-.meter{border-top:1px solid #4b5563;padding-top:14px;margin-top:14px}.status{font-family:monospace;white-space:pre-wrap;background:#0b1220;padding:10px;border-radius:8px}
+.meter{border-top:1px solid #4b5563;padding-top:14px;margin-top:14px}.status{font-family:monospace;white-space:pre-wrap;word-break:break-all;background:#0b1220;padding:10px;border-radius:8px}
 .small{font-size:12px}input.live{border-color:#3b82f6;transition:border-color .3s}input.edited{border-color:#f59e0b}.row{display:flex;gap:8px;flex-wrap:wrap}.ok{color:#86efac}.bad{color:#fca5a5}
-</style></head><body><div class="wrap"><h1>BAScloud M-Bus Virtual Meter</h1><div class="muted">ESP32 + TSS721 · v0.1 · <a href="/api/docs" style="color:#93c5fd">API-Dokumentation</a></div>
-<div class="row small" style="align-items:center;margin-top:10px"><label for="refresh" style="display:inline">Zählerstände automatisch aktualisieren:</label>
+header{position:sticky;top:0;z-index:10;background:#0b1220;border-bottom:1px solid #374151}
+.bar{max-width:1100px;margin:auto;padding:10px 16px 0;display:flex;align-items:center;gap:12px;flex-wrap:wrap}.bar .sp{flex:1}
+nav{max-width:1100px;margin:auto;padding:0 16px;display:flex;gap:2px;overflow-x:auto}
+nav a{padding:10px 14px;color:#9ca3af;text-decoration:none;font-weight:600;font-size:14px;border-bottom:3px solid transparent;white-space:nowrap}
+nav a:hover{color:#e5e7eb}nav a.act{color:#fff;border-bottom-color:#3b82f6}
+#msg{max-width:1100px;margin:auto;padding:4px 16px 8px}#msg:empty{display:none}
+.page{display:none}.page.act{display:block}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.tile{background:#111827;border:1px solid #374151;border-radius:10px;padding:12px}.tile b{display:block;font-size:12px;color:#9ca3af;font-weight:600;margin-bottom:4px}.tile span{font-size:15px;word-break:break-word}
+a{color:#93c5fd}
+input:disabled{opacity:.45;cursor:not-allowed}.tag{display:inline-block;font-size:12px;font-weight:600;padding:3px 8px;border-radius:999px;margin-left:8px;vertical-align:middle;background:#374151;color:#cbd5e1}.tag.bad{background:#7f1d1d;color:#fecaca}
+.meter.used h3{color:#9ca3af}input.conflict{border-color:#ef4444}
+</style></head><body>
+<header><div class="bar"><h1>BAScloud M-Bus Virtual Meter</h1><span class="muted small">ESP32 + TSS721 · v0.1</span><span class="sp"></span><button class="primary" onclick="save()">Speichern</button></div>
+<nav><a href="#status">Status</a><a href="#zaehler">Zähler</a><a href="#impulse">Impulse</a><a href="#sensor">BME280</a><a href="#mqtt">MQTT</a><a href="#system">System</a></nav>
+<div id="msg" class="small"></div></header><div class="wrap">
+<section class="page" id="p-status"><div class="card"><h2>Übersicht</h2><div class="tiles">
+<div class="tile"><b>IP-Adresse</b><span id="tIp">…</span></div><div class="tile"><b>WLAN-Modus</b><span id="tMode">…</span></div>
+<div class="tile"><b>M-Bus RX / TX</b><span id="tFrames">…</span></div><div class="tile"><b>MQTT</b><span id="tMqtt">…</span></div>
+<div class="tile"><b>BME280</b><span id="tSensor">…</span></div></div></div>
+<div class="card"><h2>M-Bus Monitor</h2><div id="status" class="status">lade...</div></div></section>
+<section class="page" id="p-zaehler"><div class="card"><h2>Virtuelle M-Bus-Zähler</h2><div class="row small" style="align-items:center;margin-bottom:4px"><label for="refresh" style="display:inline">Zählerstände automatisch aktualisieren:</label>
 <select id="refresh" onchange="setRefresh(+this.value)" style="width:auto;margin:0;padding:5px 8px"><option value="0">Aus</option><option value="1">alle 1 s</option><option value="2">alle 2 s</option><option value="5">alle 5 s</option><option value="10">alle 10 s</option><option value="30">alle 30 s</option><option value="60">alle 60 s</option></select></div>
-<div class="card"><h2>Gerät</h2><div class="grid">
-<label>WLAN SSID<input id="wifiSsid"></label><label>WLAN Passwort<input id="wifiPassword" type="password" placeholder="leer = unverändert"></label>
-<label>M-Bus Baudrate<select id="mbusBaud"><option>300</option><option>2400</option><option>9600</option></select></label>
-<label>M-Bus Stoppbits<select id="mbusStopBits"><option value="1">1 (8E1, Standard)</option><option value="2">2 (8E2, Workaround)</option></select></label>
-<label>Pause nach jedem Byte (ms, Standard 10, 0 = normgerecht)<input id="mbusByteGapMs" type="number" min="0" max="20"></label>
-<label>UART RX GPIO<input id="mbusRxPin" type="number"></label><label>UART TX GPIO<input id="mbusTxPin" type="number"></label>
-<label>Anzahl virtueller Zähler<input id="meterCount" type="number" min="1" max="250"></label></div>
-<div class="row" style="margin-top:12px"><button class="primary" onclick="renderMeters()">Anzahl übernehmen</button><button class="primary" onclick="save()">Speichern</button><button onclick="restart()">ESP32 neu starten</button></div><div id="msg" class="small"></div></div>
-<div class="card"><h2>BME280-Sensor</h2><div class="muted small">Temperatur, Luftfeuchte und Luftdruck über I²C. Der Sensor antwortet auf dem M-Bus als eigener Slave (Medium Raumsensor) unter seiner Primäradresse. Diese darf nicht von einem aktiven Zähler belegt sein.</div>
+<div class="muted small">Der Zählerstand wird als 32-Bit-Ganzzahl übertragen (0 … 4.294.967.295 Schritte). Die <b>Auflösung</b> legt fest, welchem Wert ein Schritt entspricht – je feiner die Auflösung, desto kleiner der maximale Zählerstand.<br>
+Beispiel m³: 0,001 → max. 4.294.967,295 m³ · 0,01 → max. 42.949.672,95 m³ · 1 → max. 4.294.967.295 m³. Der Wert wird auf die gewählte Auflösung gerundet.<br>
+Die Zählerstände werden im hier eingestellten Intervall automatisch aktualisiert (z. B. bei Änderungen per MQTT oder REST). Felder, die du gerade bearbeitest, werden dabei nicht überschrieben und sind gelb markiert, bis du speicherst.</div><div class="grid" style="margin-top:12px;align-items:end"><label>Anzahl virtueller Zähler<input id="meterCount" type="number" min="1" max="250"></label><div><button onclick="renderMeters()">Anzahl übernehmen</button></div></div><div id="meters"></div></div>
+</section>
+<section class="page" id="p-impulse"><div class="card"><h2>Impulseingänge</h2><div class="muted small">Zählt Impulse (Reedkontakt, S0-Ausgang) auf einem virtuellen Zähler: <b>Zählerstand = Startwert + Impulse × Faktor</b>. Der Faktor ist der Wert pro Impuls in der Einheit des Zählers, z. B. 0,001 m³ (1 l/Impuls) oder 0,001 kWh (1000 Imp./kWh).<br>
+Ein Impuls zählt, wenn der Eingang mindestens die Entprellzeit lang aktiv ist. Wird der Zählerstand gesetzt (hier, per REST oder MQTT), zählt der Eingang von diesem Wert aus weiter. Startwert und Impulse werden spätestens nach 60 s gespeichert.<br>
+Kontakt zwischen GPIO und GND mit internem Pull-up. GPIO 34–39 haben keinen Pull-up. Einstellungen gelten sofort nach dem Speichern.</div><div id="pulses"></div></div>
+</section>
+<section class="page" id="p-sensor"><div class="card"><h2>BME280-Sensor</h2><div class="muted small">Temperatur, Luftfeuchte und Luftdruck über I²C. Der Sensor antwortet auf dem M-Bus als eigener Slave (Medium Raumsensor) unter seiner Primäradresse. Diese darf nicht von einem aktiven Zähler belegt sein.</div>
 <div class="grid" style="margin-top:10px">
 <label>Aktiv<select id="sEn"><option value="1">Ja</option><option value="0">Nein</option></select></label>
 <label>Name<input id="sName"></label><label>Primäradresse<input id="sPa" type="number" min="1" max="250"></label>
@@ -31,26 +51,33 @@ button{border:0;border-radius:8px;padding:10px 14px;font-weight:700;cursor:point
 <label>I²C-Adresse<select id="sI2c"><option value="118">0x76 (SDO an GND)</option><option value="119">0x77 (SDO an VCC)</option></select></label></div>
 <div class="small" style="margin-top:10px">Messwerte: <span id="sensorStatus">…</span></div>
 <div class="muted small">Aktivieren und Änderungen an den I²C-Pins werden nach einem Neustart wirksam.</div></div>
-<div class="card"><h2>Impulseingänge</h2><div class="muted small">Zählt Impulse (Reedkontakt, S0-Ausgang) auf einem virtuellen Zähler: <b>Zählerstand = Startwert + Impulse × Faktor</b>. Der Faktor ist der Wert pro Impuls in der Einheit des Zählers, z. B. 0,001 m³ (1 l/Impuls) oder 0,001 kWh (1000 Imp./kWh).<br>
-Ein Impuls zählt, wenn der Eingang mindestens die Entprellzeit lang aktiv ist. Wird der Zählerstand gesetzt (hier, per REST oder MQTT), zählt der Eingang von diesem Wert aus weiter. Startwert und Impulse werden spätestens nach 60 s gespeichert.<br>
-Kontakt zwischen GPIO und GND mit internem Pull-up. GPIO 34–39 haben keinen Pull-up. Einstellungen gelten sofort nach dem Speichern.</div><div id="pulses"></div></div>
-<div class="card"><h2>MQTT</h2><div class="grid">
+</section>
+<section class="page" id="p-mqtt"><div class="card"><h2>MQTT</h2><div class="grid">
 <label>MQTT aktiv<select id="mqttEnabled"><option value="1">Ja</option><option value="0">Nein</option></select></label>
 <label>Broker (Host/IP)<input id="mqttHost" placeholder="192.168.1.10"></label><label>Port<input id="mqttPort" type="number" min="1" max="65535"></label>
 <label>Benutzer<input id="mqttUser" placeholder="optional"></label><label>Passwort<input id="mqttPassword" type="password" placeholder="leer = unverändert"></label>
 <label>Basis-Topic<input id="mqttBaseTopic" placeholder="bascloud/mbus"></label></div>
 <div class="muted small" style="margin-top:10px">Zählerstand setzen: <code><span class="bt"></span>/meter/&lt;n&gt;/set</code> mit <code>123.456</code> oder <code>{"value":123.456}</code> (n = Zählernummer 1…250).<br>
 Der Zähler meldet seinen Stand zurück auf <code><span class="bt"></span>/meter/&lt;n&gt;/state</code> (retained JSON), abgelehnte Werte auf <code><span class="bt"></span>/error</code>, Verbindungsstatus auf <code><span class="bt"></span>/status</code>.</div></div>
-<div class="card"><h2>Virtuelle M-Bus-Zähler</h2><div class="muted small">Der Zählerstand wird als 32-Bit-Ganzzahl übertragen (0 … 4.294.967.295 Schritte). Die <b>Auflösung</b> legt fest, welchem Wert ein Schritt entspricht – je feiner die Auflösung, desto kleiner der maximale Zählerstand.<br>
-Beispiel m³: 0,001 → max. 4.294.967,295 m³ · 0,01 → max. 42.949.672,95 m³ · 1 → max. 4.294.967.295 m³. Der Wert wird auf die gewählte Auflösung gerundet.<br>
-Die Zählerstände werden im oben eingestellten Intervall automatisch aktualisiert (z. B. bei Änderungen per MQTT oder REST). Felder, die du gerade bearbeitest, werden dabei nicht überschrieben und sind gelb markiert, bis du speicherst.</div><div id="meters"></div></div>
+</section>
+<section class="page" id="p-system"><div class="card"><h2>WLAN</h2><div class="grid">
+<label>WLAN SSID<input id="wifiSsid"></label><label>WLAN Passwort<input id="wifiPassword" type="password" placeholder="leer = unverändert"></label></div>
+<div class="muted small" style="margin-top:10px">Ohne Verbindung startet der ESP32 einen eigenen Access Point (BAScloud-MBus-…). Änderungen werden nach Neustart aktiv.</div></div>
+<div class="card"><h2>M-Bus Schnittstelle</h2><div class="grid">
+<label>M-Bus Baudrate<select id="mbusBaud"><option>300</option><option>2400</option><option>9600</option></select></label>
+<label>M-Bus Stoppbits<select id="mbusStopBits"><option value="1">1 (8E1, Standard)</option><option value="2">2 (8E2, Workaround)</option></select></label>
+<label>Pause nach jedem Byte (ms, Standard 10, 0 = normgerecht)<input id="mbusByteGapMs" type="number" min="0" max="20"></label>
+<label>UART RX GPIO<input id="mbusRxPin" type="number"></label><label>UART TX GPIO<input id="mbusTxPin" type="number"></label></div>
+<div class="muted small" style="margin-top:10px">Änderungen an der UART werden nach Neustart aktiv.</div></div>
+<div class="card"><h2>Firmware-Update</h2><div class="muted small">firmware.bin aus .pio/build/esp32dev/ hochladen. Konfiguration und Zählerstände bleiben erhalten.</div><div class="row" style="margin-top:10px;flex-wrap:nowrap"><input id="fw" type="file" accept=".bin"><button class="primary" onclick="ota()">Hochladen</button></div><div id="otaMsg" class="small"></div></div>
+<div class="card"><h2>Neustart</h2><div class="row"><button onclick="restart()">ESP32 neu starten</button></div></div>
 <div class="card"><h2>REST-API</h2><div class="muted small">
 <code>GET /api/meters</code> – alle Zähler abfragen · <code>GET /api/meters/&lt;n&gt;</code> – einen Zähler abfragen<br>
 <code>PUT /api/meters/&lt;n&gt;</code> mit <code>{"value":123.456}</code> – Zählerstand setzen<br>
 <code>PUT /api/meters</code> mit <code>[{"index":1,"value":1.5},{"primaryAddress":7,"value":2}]</code> – mehrere Zähler auf einmal setzen<br>
 Werte, die per REST oder MQTT gesetzt werden, sind sofort per M-Bus abrufbar und werden nach spätestens 60 s dauerhaft gespeichert.<br>
 Ausführliche Doku zum Ausprobieren: <a href="/api/docs" style="color:#93c5fd">/api/docs</a></div></div>
-<div class="card"><h2>M-Bus Monitor</h2><div id="status" class="status">lade...</div></div>
+</section>
 </div><script>
 let cfg={meters:[]};
 // '2b' = electricity, bidirectional (medium 2 + bidirectional flag)
@@ -60,12 +87,12 @@ async function load(){cfg=await (await fetch('/api/config')).json();for(const k 
 let s=cfg.sensor||{};document.getElementById('sEn').value=s.enabled?'1':'0';for(const [id,k] of SENSOR_FIELDS)document.getElementById(id).value=s[k]??'';document.querySelectorAll('.bt').forEach(e=>e.textContent=cfg.mqttBaseTopic||'bascloud/mbus');renderPulses();renderMeters();}
 function renderMeters(){let n=Math.max(1,Math.min(250,+document.getElementById('meterCount').value||1));document.getElementById('meterCount').value=n;
 while(cfg.meters.length<n){let i=cfg.meters.length;cfg.meters.push({enabled:true,name:`Meter ${i+1}`,primaryAddress:i+1,secondaryAddress:10000001+i,manufacturer:'BAS',version:1,medium:7,value:0,unit:'m3',resolutionExp:-3});}cfg.meters=cfg.meters.slice(0,n);
-let h='';cfg.meters.forEach((m,i)=>{h+=`<div class="meter"><h3>Zähler ${i+1}</h3><div class="grid">
+let h='';cfg.meters.forEach((m,i)=>{h+=`<div class="meter" id="m${i}"><h3>Zähler ${i+1}<span id="use${i}"></span></h3><div class="grid">
 <label>Aktiv<select id="en${i}"><option value="1" ${m.enabled?'selected':''}>Ja</option><option value="0" ${!m.enabled?'selected':''}>Nein</option></select></label>
 <label>Name<input id="name${i}" value="${esc(m.name)}"></label><label>Primäradresse<input id="pa${i}" type="number" min="1" max="250" value="${m.primaryAddress}"></label>
 <label>Sekundäradresse<input id="sa${i}" type="number" min="0" max="99999999" value="${m.secondaryAddress}"></label><label>Manufacturer (3 Zeichen)<input id="man${i}" maxlength="3" value="${esc(m.manufacturer)}"></label>
 <label>Version<input id="ver${i}" type="number" min="0" max="255" value="${m.version}"></label><label>Medium<select id="med${i}" onchange="typeVis(${i})">${media.map(x=>`<option value="${x[0]}" ${(x[0]==='2b'?!!m.bidirectional:!m.bidirectional&&+m.medium===+x[0])?'selected':''}>${x[1]}</option>`).join('')}</select></label>
-<label><span id="vl${i}">Zählerstand</span><input id="val${i}" type="number" min="0" value="${m.value}" ${pulseOf(i)>=0?'disabled':''} oninput="this.dataset.edited=1;this.classList.add('edited')"><span id="hint${i}" class="muted small"></span>${pulseOf(i)>=0?`<span class="muted small"><br>gezählt von Impulseingang ${pulseOf(i)+1}</span>`:''}</label><label>Einheit<select id="unit${i}" onchange="upd(${i})"><option value="m3" ${m.unit==='m3'?'selected':''}>m³</option><option value="kWh" ${m.unit==='kWh'?'selected':''}>kWh</option></select></label>
+<label><span id="vl${i}">Zählerstand</span><input id="val${i}" type="number" min="0" value="${m.value}" oninput="this.dataset.edited=1;this.classList.add('edited')"><span id="hint${i}" class="muted small"></span><span id="pu${i}" class="muted small"></span></label><label>Einheit<select id="unit${i}" onchange="upd(${i})"><option value="m3" ${m.unit==='m3'?'selected':''}>m³</option><option value="kWh" ${m.unit==='kWh'?'selected':''}>kWh</option></select></label>
 <label>Auflösung<select id="res${i}" onchange="upd(${i})">${RES.map(e=>`<option value="${e}" ${e===resOf(m)?'selected':''}>${fmt(Math.pow(10,e),e)}</option>`).join('')}</select></label>
 </div><div class="grid" id="heat${i}" style="margin-top:10px${isHeat(m.medium)?'':';display:none'}">
 <label>Durchfluss (m³/h)<input id="fl${i}" type="number" min="0" max="${FLOW_MAX}" step="0.001" value="${m.flow??0}" oninput="this.dataset.edited=1;this.classList.add('edited')"><span class="muted small">Auflösung 0,001 m³/h (1 l/h)</span></label>
@@ -73,11 +100,12 @@ let h='';cfg.meters.forEach((m,i)=>{h+=`<div class="meter"><h3>Zähler ${i+1}</h
 <label>Rücklauftemperatur (°C)<input id="rt${i}" type="number" min="${TEMP_MIN}" max="${TEMP_MAX}" step="0.1" value="${m.returnTemp??0}" oninput="this.dataset.edited=1;this.classList.add('edited')"><span class="muted small">Auflösung 0,1 °C</span></label>
 </div><div class="grid" id="bidir${i}" style="margin-top:10px${m.bidirectional?'':';display:none'}">
 ${REGS.map((r,k)=>`<label>${r[0]} ${r[1]} (kWh)<input id="reg${k}_${i}" type="number" min="0" value="${m[r[0]]??0}" oninput="this.dataset.edited=1;this.classList.add('edited')"></label>`).join('')}
-</div></div>`});document.getElementById('meters').innerHTML=h;cfg.meters.forEach((m,i)=>typeVis(i));}
+</div></div>`});document.getElementById('meters').innerHTML=h;cfg.meters.forEach((m,i)=>typeVis(i));markUsage();}
+const PULSE_PINS=[32,33,25,26,27,14];
 const PULSE_FIELDS=[['pPin','pin'],['pDeb','debounceMs'],['pMeter','meter'],['pFac','factor']];
-function renderPulses(){let h='';(cfg.pulses||[{},{}]).forEach((p,i)=>{h+=`<div class="meter"><h3>Impulseingang ${i+1}</h3><div class="grid">
+function renderPulses(){let h='';(cfg.pulses||PULSE_PINS.map(()=>({}))).forEach((p,i)=>{h+=`<div class="meter"><h3>Impulseingang ${i+1}</h3><div class="grid">
 <label>Aktiv<select id="pEn${i}"><option value="1" ${p.enabled?'selected':''}>Ja</option><option value="0" ${!p.enabled?'selected':''}>Nein</option></select></label>
-<label>GPIO<input id="pPin${i}" type="number" min="0" max="39" value="${p.pin??(32+i)}"></label>
+<label>GPIO<input id="pPin${i}" type="number" min="0" max="39" value="${p.pin??PULSE_PINS[i]}"></label>
 <label>Pull-up intern<select id="pPull${i}"><option value="1" ${p.pullup!==false?'selected':''}>Ja</option><option value="0" ${p.pullup===false?'selected':''}>Nein</option></select></label>
 <label>Impuls aktiv bei<select id="pLow${i}"><option value="1" ${p.activeLow!==false?'selected':''}>Low (Kontakt nach GND)</option><option value="0" ${p.activeLow===false?'selected':''}>High</option></select></label>
 <label>Entprellzeit (ms)<input id="pDeb${i}" type="number" min="1" max="1000" value="${p.debounceMs??20}"></label>
@@ -85,9 +113,18 @@ function renderPulses(){let h='';(cfg.pulses||[{},{}]).forEach((p,i)=>{h+=`<div 
 <label>Faktor (Einheit pro Impuls)<input id="pFac${i}" type="number" min="0" step="any" value="${p.factor??0.001}"></label>
 <label>Startwert<span class="row" style="flex-wrap:nowrap"><input id="pStart${i}" type="number" min="0" step="any" placeholder="neuer Zählerstand"><button class="primary" style="margin-top:4px" onclick="setStart(${i})">Setzen</button></span></label>
 </div><div class="small" style="margin-top:8px" id="pSt${i}">…</div></div>`;});document.getElementById('pulses').innerHTML=h;}
-function gatherPulses(){return [0,1].map(i=>{let p={enabled:document.getElementById('pEn'+i).value==='1',pullup:document.getElementById('pPull'+i).value==='1',activeLow:document.getElementById('pLow'+i).value==='1'};for(const [id,k] of PULSE_FIELDS)p[k]=+document.getElementById(id+i).value;return p;});}
-// Input (0-based) that counts meter i according to the saved configuration, -1 if none.
-function pulseOf(i){return (cfg.pulses||[]).findIndex(p=>p.enabled&&p.meter===i+1);}
+function gatherPulses(){return [...document.querySelectorAll('[id^=pEn]')].map((_,i)=>{let p={enabled:document.getElementById('pEn'+i).value==='1',pullup:document.getElementById('pPull'+i).value==='1',activeLow:document.getElementById('pLow'+i).value==='1'};for(const [id,k] of PULSE_FIELDS)p[k]=+document.getElementById(id+i).value;return p;});}
+// Marks meters used by another function, based on the current (possibly unsaved) form values:
+// pulse inputs count a meter (value field locked), the BME280 must not share a primary address.
+function markUsage(){if(!document.getElementById('pEn0'))return;let ps=gatherPulses(),s=gatherSensor();
+cfg.meters.forEach((m,i)=>{let tags=[],k=ps.findIndex(p=>p.enabled&&p.meter===i+1),val=document.getElementById('val'+i),pa=document.getElementById('pa'+i);if(!val)return;
+if(k>=0)tags.push(`<span class="tag">Impulseingang ${k+1} · GPIO ${ps[k].pin}</span>`);
+let clash=s.enabled&&document.getElementById('en'+i).value==='1'&&+pa.value===s.primaryAddress;
+if(clash)tags.push(`<span class="tag bad">Primäradresse ${s.primaryAddress} belegt durch BME280</span>`);
+pa.classList.toggle('conflict',clash);val.disabled=k>=0;document.getElementById('pu'+i).innerHTML=k>=0?'<br>wird vom Impulseingang gezählt':'';
+document.getElementById('use'+i).innerHTML=tags.join('');document.getElementById('m'+i).classList.toggle('used',k>=0);});}
+document.addEventListener('change',e=>{if(/^(pEn|pPin|pMeter|sEn|sPa|pa|en)\d*$/.test(e.target.id))markUsage();});
+document.addEventListener('input',e=>{if(/^(pPin|pMeter|sPa|pa)\d*$/.test(e.target.id))markUsage();});
 async function setStart(i){let p=(cfg.pulses||[])[i],v=document.getElementById('pStart'+i).value,msg=document.getElementById('pSt'+i);msg._until=Date.now()+4000;
 if(!p||!p.enabled){msg.className='small bad';msg.textContent='Impulseingang erst aktivieren und speichern.';return;}
 if(v===''||!(+v>=0)){msg.className='small bad';msg.textContent='Startwert muss eine Zahl >= 0 sein.';return;}
@@ -125,8 +162,10 @@ if(m.bidirectional)for(const [reg,name] of REGS){let v=m[reg];if(!(v>=0)||rawOf(
 if(isHeat(m.medium)){if(!(m.flow>=0&&m.flow<=FLOW_MAX))return `Zähler ${i+1}: Durchfluss muss zwischen 0 und ${fmt(FLOW_MAX,-3)} m³/h liegen.`;
 for(const [t,name] of [[m.flowTemp,'Vorlauftemperatur'],[m.returnTemp,'Rücklauftemperatur']])if(!(t>=TEMP_MIN&&t<=TEMP_MAX))return `Zähler ${i+1}: ${name} muss zwischen ${fmt(TEMP_MIN,-1)} und ${fmt(TEMP_MAX,-1)} °C liegen.`;}if(m.value!==undefined&&(!(m.value>=0)||r>RAW_MAX))return `Zähler ${i+1}: Zählerstand muss zwischen 0 und ${fmt(maxOf(m.resolutionExp),m.resolutionExp)} ${unitName(m.unit)} liegen (Auflösung erhöhen für größere Werte).`;}return '';}
 async function save(){let c=gather(),err=check(c),msg=document.getElementById('msg');if(err){msg.className='small bad';msg.textContent=err;return;}let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(c)});let t=await r.text();document.getElementById('msg').className=r.ok?'small ok':'small bad';document.getElementById('msg').textContent=t;if(r.ok)setTimeout(load,400);}
+async function ota(){let f=document.getElementById('fw').files[0],m=document.getElementById('otaMsg');if(!f){m.className='small bad';m.textContent='Keine Datei gewählt';return;}m.className='small';m.textContent='Upload läuft...';let d=new FormData();d.append('firmware',f);try{let r=await fetch('/api/update',{method:'POST',body:d});m.className=r.ok?'small ok':'small bad';m.textContent=await r.text();}catch(e){m.className='small bad';m.textContent='Verbindung abgebrochen';}}
 async function restart(){await fetch('/api/restart',{method:'POST'});document.getElementById('msg').textContent='Neustart ausgelöst...';}
 async function stat(){try{let s=await (await fetch('/api/status')).json();document.getElementById('status').textContent=`IP: ${s.ip}\nModus: ${s.wifiMode}\nRX Frames: ${s.rxFrames}\nTX Frames: ${s.txFrames}\nLetztes Ereignis: ${s.lastEvent}\nRX: ${s.lastRx}\nTX: ${s.lastTx}\nMQTT: ${s.mqtt}\nBME280: ${s.sensor}`;document.getElementById('sensorStatus').textContent=s.sensor;
+for(const [id,v] of [['tIp',s.ip],['tMode',s.wifiMode],['tFrames',s.rxFrames+' / '+s.txFrames],['tMqtt',s.mqtt],['tSensor',s.sensor]])document.getElementById(id).textContent=v;
 (s.pulses||[]).forEach((p,i)=>{let el=document.getElementById('pSt'+i);if(!el||Date.now()<(el._until||0))return;el.className='small';
 el.textContent=p.enabled?`Zähler ${p.meter}: Startwert ${+p.startValue.toFixed(6)} + ${p.count} Impulse → Zählerstand ${+p.value.toFixed(6)} ${unitName(p.unit)}`:'deaktiviert';});}catch(e){}}
 async function refreshValues(){try{let list=await (await fetch('/api/values')).json();
@@ -141,6 +180,9 @@ let refreshTimer=null;
 function setRefresh(sec){clearInterval(refreshTimer);refreshTimer=sec>0?setInterval(refreshValues,sec*1000):null;try{localStorage.setItem('refreshSec',sec);}catch(e){}}
 function initRefresh(){let sec=2;try{let s=localStorage.getItem('refreshSec');if(s!==null&&[...document.getElementById('refresh').options].some(o=>o.value===s))sec=+s;}catch(e){}
 document.getElementById('refresh').value=sec;setRefresh(sec);}
+function route(){let id=location.hash.slice(1);if(!document.getElementById('p-'+id))id='status';
+document.querySelectorAll('.page').forEach(p=>p.classList.toggle('act',p.id==='p-'+id));document.querySelectorAll('nav a').forEach(a=>a.classList.toggle('act',a.getAttribute('href')==='#'+id));}
+window.addEventListener('hashchange',route);route();
 load();stat();setInterval(stat,1500);initRefresh();
 </script></body></html>
 )HTML";

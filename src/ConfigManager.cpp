@@ -66,7 +66,7 @@ void ConfigManager::factoryDefaults() {
     cfg_.meters[i].resolutionExp = -3;
   }
   for (size_t i = 0; i < PULSE_INPUTS; ++i) {
-    cfg_.pulses[i].pin = i == 0 ? 32 : 33;
+    cfg_.pulses[i].pin = PULSE_DEFAULT_PINS[i];
     cfg_.pulses[i].meter = static_cast<uint16_t>(i + 1);
   }
 }
@@ -618,7 +618,7 @@ bool ConfigManager::fromDoc(JsonDocument &doc, String &error) {
     PulseInput &p = cfg_.pulses[i];
     const String name = "Impulseingang " + String(i + 1) + ": ";
     p.enabled = o["enabled"] | false;
-    p.pin = o["pin"] | (i == 0 ? 32 : 33);
+    p.pin = o["pin"] | PULSE_DEFAULT_PINS[i];
     p.pullup = o["pullup"] | true;
     p.activeLow = o["activeLow"] | true;
     p.debounceMs = static_cast<uint16_t>(constrain(o["debounceMs"] | 20, 1, 1000));
