@@ -1,0 +1,15 @@
+GPIO;Funktion;Richtung;Gegenstelle;Pull-up;Einstellbar;Hinweis
+0;BOOT-Taster;Eingang;Taster nach GND;intern + extern 10k nach 3,3 V;nein;Strapping-Pin: beim Reset gedrückt = Download-Modus. Im Betrieb 5 s halten = Anmeldung aus, lokale Weboberfläche an
+16;M-Bus UART RX;Eingang;TSS721 TX (RXD-Ausgang des Moduls);-;ja (Web);8E1 2400 Baud Standard
+17;M-Bus UART TX;Ausgang;TSS721 RX (TXD-Eingang des Moduls);-;ja (Web);
+21;I2C SDA (BME280);bidirektional;BME280 SDA;4,7k nach 3,3 V (oft auf dem BME280-Modul);ja (Web);nur bei aktivem BME280
+22;I2C SCL (BME280);Ausgang;BME280 SCL;4,7k nach 3,3 V (oft auf dem BME280-Modul);ja (Web);nur bei aktivem BME280
+32;Impulseingang 1;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);
+33;Impulseingang 2;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);
+25;Impulseingang 3;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);
+26;Impulseingang 4;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);
+27;Impulseingang 5;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);
+14;Impulseingang 6;Eingang;Reedkontakt / S0+ (S0- an GND);intern, extern 10k empfohlen;ja (Web);gibt beim Booten kurz ein PWM-Signal aus: 1k Serienwiderstand vorsehen
+1;USB-UART TX0;Ausgang;USB-Seriell-Wandler RX;-;nein;Flashen + serieller Monitor, nicht anderweitig belegen
+3;USB-UART RX0;Eingang;USB-Seriell-Wandler TX;-;nein;Flashen + serieller Monitor, nicht anderweitig belegen
+EN;Reset;Eingang;Taster nach GND;10k nach 3,3 V + 1 µF nach GND;nein;kein GPIO, aber für eigene Platine nötig

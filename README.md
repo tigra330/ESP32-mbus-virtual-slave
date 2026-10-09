@@ -20,6 +20,7 @@ Ein ESP32 emuliert mehrere virtuelle M-Bus-Zähler hinter einem einzelnen TSS721
 - optionaler BME280-Sensor (Temperatur, Luftfeuchte, Luftdruck) als eigener M-Bus-Slave mit einstellbarer Primäradresse
 - Zählerstände per MQTT setzen
 - REST-API zum Abfragen und Setzen der Zählerstände
+- [GPIO-Belegung](#gpio-belegung-platine) für den Platinenbau, auch als CSV
 - Weboberfläche zur Konfiguration mit Menü (Status, Zähler, Impulse, BME280, MQTT, System)
 - Firmware-Update über die Weboberfläche (OTA)
 - optionale Anmeldung (HTTP Basic-Auth), Statusseite bleibt offen
@@ -41,6 +42,46 @@ Version 0.1 implementiert absichtlich nur die minimale Kommunikation:
 - `REQ_UD2 -> RSP_UD`
 
 Sekundäradress-Selektion (`SND_UD`, CI 0x52/0x56), Schreiben von Primäradressen, FCB-Zwischenspeicherung und weitere M-Bus-Datensätze sind noch nicht enthalten.
+
+## GPIO-Belegung (Platine)
+
+Alle GPIOs, die die Firmware nutzt, mit Standardbelegung. Als Tabelle für das Platinenlayout auch in [hardware/gpio-pinout.csv](hardware/gpio-pinout.csv) (Semikolon-getrennt).
+
+| GPIO | Funktion | Richtung | Anschluss | Beschaltung |
+|---|---|---|---|---|
+| 0 | BOOT-Taster | Eingang | Taster nach GND | 10 kΩ nach 3,3 V (intern zusätzlich Pull-up) |
+| 16 | M-Bus UART RX | Eingang | TSS721 TX | – |
+| 17 | M-Bus UART TX | Ausgang | TSS721 RX | – |
+| 21 | I²C SDA (BME280) | bidirektional | BME280 SDA | 4,7 kΩ nach 3,3 V, falls nicht auf dem Modul |
+| 22 | I²C SCL (BME280) | Ausgang | BME280 SCL | 4,7 kΩ nach 3,3 V, falls nicht auf dem Modul |
+| 32 | Impulseingang 1 | Eingang | Reedkontakt / S0+ | siehe unten |
+| 33 | Impulseingang 2 | Eingang | Reedkontakt / S0+ | siehe unten |
+| 25 | Impulseingang 3 | Eingang | Reedkontakt / S0+ | siehe unten |
+| 26 | Impulseingang 4 | Eingang | Reedkontakt / S0+ | siehe unten |
+| 27 | Impulseingang 5 | Eingang | Reedkontakt / S0+ | siehe unten |
+| 14 | Impulseingang 6 | Eingang | Reedkontakt / S0+ | siehe unten, 1 kΩ in Serie Pflicht |
+| 1 / 3 | USB-UART TX0 / RX0 | – | USB-Seriell-Wandler | zum Flashen und für den seriellen Monitor freihalten |
+| EN | Reset | – | Taster nach GND | 10 kΩ nach 3,3 V, 1 µF nach GND |
+
+UART-, I²C- und Impuls-Pins lassen sich in der Weboberfläche ändern. GPIO 0 (BOOT) ist fest.
+
+**BOOT-Taster (GPIO 0):** GPIO 0 ist ein Strapping-Pin. Ist er beim Reset gedrückt, startet der ESP32 im Download-Modus zum Flashen. Im laufenden Betrieb 5 s gehalten, schaltet er die [Anmeldung](#anmeldung) aus und die [lokale Weboberfläche](#lokale-weboberfläche-abschalten) ein. Auf einem ESP32-DevKit ist der Taster schon vorhanden. Auf einer eigenen Platine: Taster nach GND, 10 kΩ Pull-up, optional 100 nF parallel zum Taster zum Entprellen.
+
+**Impulseingänge:** Kontakt bzw. S0-Ausgang zwischen GPIO und GND (S0+ an den GPIO, S0− an GND). Der interne Pull-up (ca. 45 kΩ) reicht für kurze Leitungen. Für eine Platine mit Klemmen und längeren Leitungen empfohlen:
+
+```text
+3,3 V ── 10 kΩ ──┐
+                 │
+Klemme + ────────┼── 1 kΩ ── GPIO
+                 │
+                100 nF  (optional, filtert Störungen)
+                 │
+Klemme − ────────┴── GND
+```
+
+Der 1-kΩ-Serienwiderstand schützt den GPIO bei Störungen und ist bei GPIO 14 Pflicht: Er gibt beim Booten kurz ein PWM-Signal aus, ein geschlossener Kontakt würde den Ausgang sonst direkt nach GND kurzschließen. Nie mehr als 3,3 V an einen GPIO legen.
+
+**Freie GPIOs** für Erweiterungen: 4, 13, 18, 19, 23 sowie 34–39 (nur Eingang, kein interner Pull-up). Nicht verwenden: 6–11 (interner Flash), 12 (Strapping-Pin, muss beim Booten Low sein, sonst startet der ESP32 nicht), 2, 5 und 15 nur mit Vorsicht (Strapping-Pins).
 
 ## Anschluss ESP32 <-> TSS721
 
